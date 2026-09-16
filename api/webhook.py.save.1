@@ -1,0 +1,263 @@
+import json, os, urllib.request, urllib.parse, datetime, random, string
+
+BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
+WEBAPP_URL = "https://teal-tartufo-5a611a.netlify.app"
+REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
+REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
+
+CORS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json; charset=utf-8'
+}
+
+def json_resp(data, status=200):
+    return {'statusCode': status, 'headers': CORS, 'body': json.dumps(data, ensure_ascii=False)}
+
+def redis_cmd(*args):
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+    try:
+        url = REDIS_URL.rstrip('/') + '/' + '/'.join(urllib.parse.quote(str(a), safe='') for a in args)
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + REDIS_TOKEN})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode()).get('result')
+    except Exception as e:
+        print('Redis error: ' + str(e))
+        return None
+
+def get_user(uid):
+    data = redis_cmd('hgetall', 'user:' + str(uid))
+    if not data:
+        return None
+    result = {}
+    for i in range(0, len(data), 2):
+        result[data[i]] = data[i+1]
+    return result
+
+def save_user(uid, data):
+    for k, v in data.items():
+        redis_cmd('hset', 'user:' + str(uid), k, str(v))
+
+def create_user(uid, name='User', username='', referred_by=''):
+    if get_user(uid):
+        return False
+    save_user(uid, {
+        'user_id': uid,
+        'first_name': name,
+        'username': username,
+        'balance': 0,
+        'energy': 100,
+        'max_energy': 100,
+        'level': 1,
+        'xp': 0,
+        'taps': 0,
+        'referrals': 0,
+        'ref_earned': 0,
+        'checkin_day': 0,
+        'last_checkin': '',
+        'ads_today': 0,
+        'last_ad_date': '',
+        'daily_taps': 0,
+        'last_reset': '',
+        'referred_by': referred_by,
+        'wallet': '',
+        'clan_id': '',
+        'created_at': datetime.date.today().isoformat()
+    })
+    return True
+
+def gen_code(length=6):
+    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def get_today():
+    return datetime.date.today().isoformat()
+
+def reset_daily_if_needed(uid):
+    u = get_user(uid)
+    if not u:
+        return None
+    today = get_today()
+    if u.get('last_reset') != today:
+        u['energy'] = u.get('max_energy', '100')
+        u['daily_taps'] = '0'
+        u['ads_today'] = '0'
+        u['last_reset'] = today
+        save_useimport json, os, urllib.request, urllib.parse, datetime, random, string
+
+BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
+WEBAPP_URL = "https://teal-tartufo-5a611a.netlify.app"
+REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
+REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
+
+CORS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json; charset=utf-8'
+}
+
+def json_resp(data, status=200):
+    return {'statusCode': status, 'headers': CORS, 'body': json.dumps(data, ensure_ascii=False)}
+
+def redis_cmd(*args):
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+    try:
+        url = REDIS_URL.rstrip('/') + '/' + '/'.join(urllib.parse.quote(str(a), safe='') for a in args)
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + REDIS_TOKEN})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode()).get('result')
+    except Exception as e:
+        print('Redis error: ' + str(e))
+        return None
+
+def get_user(uid):
+    data = redis_cmd('hgetall', 'user:' + str(uid))
+    if not data:
+        return None
+    result = {}
+    for i in range(0, len(data), 2):
+        result[data[i]] = data[i+1]
+    return result
+
+def save_user(uid, data):
+    for k, v in data.items():
+        redis_cmd('hset', 'user:' + str(uid), k, str(v))
+
+def create_user(uid, name='User', username='', referred_by=''):
+    if get_user(uid):
+        return False
+    save_user(uid, {
+        'user_id': uid,
+        'first_name': name,
+        'username': username,
+        'balance': 0,
+        'energy': 100,
+        'max_energy': 100,
+        'level': 1,
+        'xp': 0,
+        'taps': 0,
+        'referrals': 0,
+        'ref_earned': 0,
+        'checkin_day': 0,
+        'last_checkin': '',
+        'ads_today': 0,
+        'last_ad_date': '',
+        'daily_taps': 0,
+        'last_reset': '',
+        'referred_by': referred_by,
+        'wallet': '',
+        'clan_id': '',
+        'created_at': datetime.date.today().isoformat()
+    })
+    return True
+
+def gen_code(length=6):
+    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def get_today():
+    return datetime.date.today().isoformat()
+
+def reset_daily_if_needed(uid):
+    u = get_user(uid)
+    if not u:
+        return None
+    today = get_today()
+    if u.get('last_reset') != today:
+        u['energy'] = u.get('max_energy', '100')
+        u['daily_taps'] = '0'
+        u['ads_today'] = '0'
+        u['last_reset'] = today
+        save_usimport json, os, urllib.request, urllib.parse, datetime, random, string
+
+BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
+WEBAPP_URL = "https://teal-tartufo-5a611a.netlify.app"
+REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
+REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
+
+CORS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json; charset=utf-8'
+}
+
+def json_resp(data, status=200):
+    return {'statusCode': status, 'headers': CORS, 'body': json.dumps(data, ensure_ascii=False)}
+
+def redis_cmd(*args):
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+    try:
+        url = REDIS_URL.rstrip('/') + '/' + '/'.join(urllib.parse.quote(str(a), safe='') for a in args)
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + REDIS_TOKEN})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode()).get('result')
+    except Exception as e:
+        print('Redis error: ' + str(e))
+        return None
+
+def get_user(uid):
+    data = redis_cmd('hgetall', 'user:' + str(uid))
+    if not data:
+        return None
+    result = {}
+    for i in range(0, len(data), 2):
+        result[data[i]] = data[i+1]
+    return result
+
+def save_user(uid, data):
+    for k, v in data.items():
+        redis_cmd('hset', 'user:' + str(uid), k, str(v))
+
+def create_user(uid, name='User', username='', referred_by=''):
+    if get_user(uid):
+        return False
+    save_user(uid, {
+        'user_id': uid,
+        'first_name': name,
+        'username': username,
+        'balance': 0,
+        'energy': 100,
+        'max_energy': 100,
+        'level': 1,
+        'xp': 0,
+        'taps': 0,
+        'referrals': 0,
+        'ref_earned': 0,
+        'checkin_day': 0,
+        'last_checkin': '',
+        'ads_today': 0,
+        'last_ad_date': '',
+        'daily_taps': 0,
+        'last_reset': '',
+        'referred_by': referred_by,
+        'wallet': '',
+        'clan_id': '',
+        'created_at': datetime.date.today().isoformat()
+    })
+    return True
+
+def gen_code(length=6):
+    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def get_today():
+    return datetime.date.today().isoformat()
+
+def reset_daily_if_needed(uid):
+    u = get_user(uid)
+    if not u:
+        return None
+    today = get_today()
+    if u.get('last_reset') != today:
+        u['energy'] = u.get('max_energy', '100')
+        u['daily_taps'] = '0'
+        u['ads_today'] = '0'
+        u['last_reset'] = today
+        save_user(uid, u)
+    return um
