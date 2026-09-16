@@ -1,15 +1,15 @@
 import asyncio
 import logging
 import os
-import urllib.request
 import json
+import urllib.request
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://silver-taffy-3217e8.netlify.app"
+WEBAPP_URL = "https://reliable-dolphin-d7d504.netlify.app"
 API_BASE = "https://mytoken-api.vercel.app"
 
 logging.basicConfig(
@@ -48,7 +48,7 @@ def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⛏️ ابدأ التعدين", web_app=WebAppInfo(url=WEBAPP_URL))],
         [InlineKeyboardButton("📊 حسابي", callback_data="stats"),
-         InlineKeyboardButton("👥 المجموعة", url="https://t.me/your_group")]
+         InlineKeyboardButton("❓ مساعدة", callback_data="help")]
     ])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -68,19 +68,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if ref_id and result and result.get('referral_processed'):
         try:
-            notify = '🎉 صديقك ' + (user.first_name or 'User') + ' انضم عبر رابطك!\n💰 ربحت 100 MYT!'
-            await context.bot.send_message(chat_id=int(ref_id), text=notify)
+            notify = (
+                '🎉 *صديق جديد انضم!*\n\n'
+                '👤 ' + (user.first_name or 'User') + '\n'
+                '💰 ربحت 100 MYT!'
+            )
+            await context.bot.send_message(chat_id=int(ref_id), text=notify, parse_mode='Markdown')
         except Exception as e:
             print('Notify error: ' + str(e))
 
-    msg = '👋 أهلاً ' + (user.first_name or 'User') + '!\n\n'
-    msg += '💰 اجمع MYT من التطبيق!\n'
-    msg += '🎁 100 MYT لكل صديق يدعوه\n'
-    msg += '📅 20 إعلان يومياً\n'
-    msg += '⚡ 100 ضغطة يومياً'
+    msg = (
+        '👋 *أهلاً ' + (user.first_name or 'User') + '*!\n\n'
+        '💰 اجمع MYT من التطبيق\n'
+        '🎁 100 MYT لكل صديق\n'
+        '📅 20 إعلان يومياً\n'
+        '⚡ 100 ضغطة يومياً\n\n'
+        '👇 اضغط الزر للبدء:'
+    )
     if ref_id:
-        msg += '\n\n🎁 تم إضافة 100 MYT لصديقك!'
-    await update.message.reply_text(msg, reply_markup=main_keyboard())
+        msg = '🎁 *تم تفعيل رابط الإحالة!*\n\n' + msg
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=main_keyboard())
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -88,15 +95,24 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not data or not data.get('ok'):
         await update.message.reply_text('⚠️ لم أجد بياناتك.\nاضغط /start أولاً.')
         return
+    balance = round(data.get('balance', 0), 4)
+    energy = data.get('energy', 0)
+    max_energy = data.get('max_energy', 100)
+    level = data.get('level', 1)
+    taps = data.get('taps', 0)
+    refs = data.get('refs', 0)
+    ref_earned = round(data.get('ref_earned', 0), 2)
+    day = data.get('checkinDay', 0)
     txt = (
-        '📊 *إحصائياتك*\n\n'
-        '💰 الرصيد: `' + str(round(data.get('balance', 0), 4)) + '` MYT\n'
-        '⚡ الطاقة: `' + str(data.get('energy', 0)) + '/' + str(data.get('max_energy', 100)) + '`\n'
-        '⭐ المستوى: `' + str(data.get('level', 1)) + '`\n'
-        '🎯 النقرات: `' + str(data.get('taps', 0)) + '`\n'
-        '👥 الإحالات: `' + str(data.get('refs', 0)) + '`\n'
-        '💎 أرباح الإحالات: `' + str(round(data.get('ref_earned', 0), 2)) + '` MYT\n'
-        '📅 أيام التسجيل: `' + str(data.get('checkinDay', 0)) + '/7`'
+        '📊 *إحصائياتك*\n'
+        '━━━━━━━━━━━━━━\n\n'
+        '💰 *الرصيد:* `' + str(balance) + '` MYT\n'
+        '⚡ *الطاقة:* `' + str(energy) + '/' + str(max_energy) + '`\n'
+        '⭐ *المستوى:* `' + str(level) + '`\n'
+        '🎯 *النقرات:* `' + str(taps) + '`\n'
+        '👥 *الإحالات:* `' + str(refs) + '`\n'
+        '💎 *أرباح الإحالات:* `' + str(ref_earned) + '` MYT\n'
+        '📅 *أيام التسجيل:* `' + str(day) + '/7`'
     )
     await update.message.reply_text(txt, parse_mode='Markdown', reply_markup=main_keyboard())
 
@@ -106,38 +122,54 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not data or not data.get('ok'):
         await update.message.reply_text('⚠️ اضغط /start أولاً.')
         return
+    balance = round(data.get('balance', 0), 4)
     await update.message.reply_text(
-        '💰 رصيدك: `' + str(round(data.get('balance', 0), 4)) + '` MYT',
+        '💰 *رصيدك:* `' + str(balance) + '` MYT',
         parse_mode='Markdown'
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     txt = (
-        '🤖 *أوامر البوت*\n\n'
-        '/start — ابدأ اللعب\n'
-        '/stats — إحصائياتك الكاملة\n'
-        '/balance — رصيدك فقط\n'
-        '/help — هذه القائمة\n\n'
-        '💡 افتح التطبيق واضغط على العملة لجمع MYT!\n'
-        '🎁 ادعُ أصدقاءك واحصل على 100 MYT لكل صديق.'
+        '🤖 *أوامر البوت*\n'
+        '━━━━━━━━━━━━━━\n\n'
+        '🚀 /start — ابدأ اللعب\n'
+        '📊 /stats — إحصائياتك الكاملة\n'
+        '💰 /balance — رصيدك فقط\n'
+        '❓ /help — هذه القائمة\n\n'
+        '💡 *كيف تلعب؟*\n'
+        '• افتح التطبيق واضغط على العملة\n'
+        '• شاهد الإعلانات لجمع المزيد\n'
+        '• ادعُ أصدقاءك واحصل على 100 MYT لكل صديق\n'
+        '• سجّل يومياً لمكافآت أكبر'
     )
     await update.message.reply_text(txt, parse_mode='Markdown', reply_markup=main_keyboard())
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
     if query.data == 'stats':
-        user = update.effective_user
         data = api_call('/api/user', {'user_id': user.id})
         if not data or not data.get('ok'):
             await query.message.reply_text('⚠️ اضغط /start أولاً.')
             return
+        balance = round(data.get('balance', 0), 4)
+        level = data.get('level', 1)
+        refs = data.get('refs', 0)
         txt = (
             '📊 *إحصائياتك*\n\n'
-            '💰 الرصيد: `' + str(round(data.get('balance', 0), 4)) + '` MYT\n'
-            '⚡ الطاقة: `' + str(data.get('energy', 0)) + '/' + str(data.get('max_energy', 100)) + '`\n'
-            '⭐ المستوى: `' + str(data.get('level', 1)) + '`\n'
-            '👥 الإحالات: `' + str(data.get('refs', 0)) + '`'
+            '💰 الرصيد: `' + str(balance) + '` MYT\n'
+            '⭐ المستوى: `' + str(level) + '`\n'
+            '👥 الإحالات: `' + str(refs) + '`'
+        )
+        await query.message.reply_text(txt, parse_mode='Markdown')
+    elif query.data == 'help':
+        txt = (
+            '💡 *كيف تلعب؟*\n\n'
+            '⛏️ اضغط زر التعدين للبدء\n'
+            '📺 شاهد الإعلانات يومياً\n'
+            '👥 ادعُ أصدقاءك\n'
+            '📅 سجّل يومياً'
         )
         await query.message.reply_text(txt, parse_mode='Markdown')
 
