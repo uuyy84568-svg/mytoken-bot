@@ -1,12 +1,13 @@
 from flask import Flask, request, jsonify
-import json, os, urllib.request, urllib.parse, datetime
+import json, os, urllib.request, urllib.parse, datetime, random
 
 app = Flask(__name__)
 
 BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://teal-tartufo-5a611a.netlify.app"
+WEBAPP_URL = "https://reliable-dolphin-d7d504.netlify.app"
 REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
 REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
+ADMIN_ID = 8063963886
 
 def redis_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -44,9 +45,14 @@ def create_user(uid, name='User', username='', referred_by=''):
         'ads_today': 0, 'last_ad_date': '',
         'daily_taps': 0, 'last_reset': '',
         'referred_by': referred_by, 'wallet': '',
+        'clan_id': '', 'clan_role': '',
         'created_at': datetime.date.today().isoformat()
     })
     return True
+
+def gen_code(length=6):
+    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(random.choice(chars) for _ in range(length))
 
 def get_today():
     return datetime.date.today().isoformat()
@@ -82,18 +88,15 @@ def process_referral(new_uid, ref_id):
         save_user(new_uid, new_user)
     return True
 
-def send_tg(chat_id, text, keyboard=None):
+def send_tg(chat_id, text):
     url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage'
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
-    if keyboard:
-        payload['reply_markup'] = json.dumps(keyboard)
     data = urllib.parse.urlencode(payload).encode()
     try:
         req = urllib.request.Request(url, data=data)
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read())
-    except Exception as e:
-        print('TG error: ' + str(e))
+    except:
         return None
 
 @app.route('/')
@@ -172,6 +175,10 @@ def api_ad():
     u['ads_today'] = ads + 1
     u['last_ad_date'] = today
     save_user(uid, u)
+    if u.get('clan_id'):
+        clan_id = 'clan:' + u['clan_id']
+        redis_cmd('hincrby', clan_id, 'ads_score', 1)
+        redis_cmd('hincrby', clan_id, 'total_score', 1)
     return jsonify({'ok': True, 'reward': 0.10, 'balance': round(new_bal, 4)})
 
 @app.route('/api/checkin', methods=['POST'])
@@ -195,6 +202,10 @@ def api_checkin():
     u['last_checkin'] = today
     u['balance'] = new_bal
     save_user(uid, u)
+    if u.get('clan_id'):
+        clan_id = 'clan:' + u['clan_id']
+        redis_cmd('hincrby', clan_id, 'daily_score', 5)
+        redis_cmd('hincrby', clan_id, 'total_score', 5)
     return jsonify({'ok': True, 'reward': reward, 'day': new_day, 'balance': round(new_bal, 4)})
 
 @app.route('/api/referral', methods=['POST'])
@@ -231,16 +242,241 @@ def api_ref_stats():
     data = request.get_json() or {}
     uid = data.get('user_id')
     if not uid:
-        return jsonify({'ok': False, 'error': 'no user_id'})
+        return jsonify({'ok': False})
     u = get_user(uid)
     if not u:
-        return jsonify({'ok': False, 'error': 'not found'})
+        return jsonify({'ok': False})
     return jsonify({
         'ok': True,
         'referrals': int(u.get('referrals', 0)),
         'ref_earned': float(u.get('ref_earned', 0)),
         'referred_by': u.get('referred_by', '')
     })
+
+@app.route('/api/admin/stats', methods=['POST'])
+def api_admin_stats():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    keys = redis_cmd('keys', 'user:*')
+    if not keys:
+        return jsonify({'ok': True, 'total_users': 0, 'active_users': 0, 'total_balance': 0, 'total_refs': 0})
+    total_balance = 0
+    total_refs = 0
+    today = get_today()
+    active = 0
+    for k in keys:
+        u = redis_cmd('hgetall', k)
+        if not u:
+            continue
+        d = {}
+        for i in range(0, len(u), 2):
+            d[u[i]] = u[i+1]
+        total_balance += float(d.get('balance', 0))
+        total_refs += int(d.get('referrals', 0))
+        if d.get('last_reset') == today:
+            active += 1
+    return jsonify({
+        'ok': True,
+        'total_users': len(keys),
+        'active_users': active,
+        'total_balance': round(total_balance, 2),
+        'total_refs': total_refs
+    })
+
+@app.route('/api/admin/users', methods=['POST'])
+def api_admin_users():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    keys = redis_cmd('keys', 'user:*')
+    users = []
+    if keys:
+        for k in keys[:100]:
+            u = redis_cmd('hgetall', k)
+            if not u:
+                continue
+            d = {}
+            for i in range(0, len(u), 2):
+                d[u[i]] = u[i+1]
+            users.append({
+                'user_id': d.get('user_id', ''),
+                'first_name': d.get('first_name', ''),
+                'username': d.get('username', ''),
+                'balance': round(float(d.get('balance', 0)), 2),
+                'level': int(d.get('level', 1)),
+                'refs': int(d.get('referrals', 0)),
+                'taps': int(d.get('taps', 0))
+            })
+    users.sort(key=lambda x: x['balance'], reverse=True)
+    return jsonify({'ok': True, 'users': users})
+
+@app.route('/api/admin/give', methods=['POST'])
+def api_admin_give():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    target = data.get('target_id')
+    amount = float(data.get('amount', 0))
+    if not target or amount == 0:
+        return jsonify({'ok': False})
+    u = get_user(target)
+    if not u:
+        return jsonify({'ok': False, 'error': 'user not found'})
+    new_bal = float(u.get('balance', 0)) + amount
+    u['balance'] = new_bal
+    save_user(target, u)
+    return jsonify({'ok': True, 'new_balance': round(new_bal, 4)})
+
+@app.route('/api/admin/broadcast', methods=['POST'])
+def api_admin_broadcast():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    text = data.get('text', '')
+    if not text:
+        return jsonify({'ok': False})
+    keys = redis_cmd('keys', 'user:*')
+    sent = 0
+    if keys:
+        for k in keys:
+            try:
+                target = k.replace('user:', '')
+                send_tg(int(target), '📢 ' + text)
+                sent += 1
+            except:
+                pass
+    return jsonify({'ok': True, 'sent': sent})
+
+@app.route('/api/clan/create', methods=['POST'])
+def api_clan_create():
+    data = request.get_json() or {}
+    uid = data.get('user_id')
+    name = data.get('name', '').strip()
+    if not uid or not name:
+        return jsonify({'ok': False})
+    u = get_user(uid)
+    if not u:
+        return jsonify({'ok': False})
+    if float(u.get('balance', 0)) < 500:
+        return jsonify({'ok': False, 'error': 'insufficient'})
+    if u.get('clan_id'):
+        return jsonify({'ok': False, 'error': 'already in clan'})
+    code = gen_code(6)
+    u['balance'] = float(u.get('balance', 0)) - 500
+    u['clan_id'] = code
+    u['clan_role'] = 'owner'
+    save_user(uid, u)
+    clan_id = 'clan:' + code
+    redis_cmd('hset', clan_id, 'code', code)
+    redis_cmd('hset', clan_id, 'name', name)
+    redis_cmd('hset', clan_id, 'owner', str(uid))
+    redis_cmd('hset', clan_id, 'owner_name', u.get('first_name', 'User'))
+    redis_cmd('hset', clan_id, 'members', '1')
+    redis_cmd('hset', clan_id, 'ads_score', '0')
+    redis_cmd('hset', clan_id, 'shop_score', '0')
+    redis_cmd('hset', clan_id, 'daily_score', '0')
+    redis_cmd('hset', clan_id, 'total_score', '0')
+    return jsonify({'ok': True, 'code': code, 'name': name})
+
+@app.route('/api/clan/join', methods=['POST'])
+def api_clan_join():
+    data = request.get_json() or {}
+    uid = data.get('user_id')
+    code = data.get('code', '').strip().upper()
+    if not uid or not code:
+        return jsonify({'ok': False})
+    u = get_user(uid)
+    if not u:
+        return jsonify({'ok': False})
+    if u.get('clan_id'):
+        return jsonify({'ok': False, 'error': 'already in clan'})
+    clan_id = 'clan:' + code
+    clan = redis_cmd('hgetall', clan_id)
+    if not clan:
+        return jsonify({'ok': False, 'error': 'not_found'})
+    d = {}
+    for i in range(0, len(clan), 2):
+        d[clan[i]] = clan[i+1]
+    u['clan_id'] = code
+    u['clan_role'] = 'member'
+    u['balance'] = float(u.get('balance', 0)) + 50
+    save_user(uid, u)
+    redis_cmd('hincrby', clan_id, 'members', 1)
+    return jsonify({'ok': True, 'name': d.get('name', ''), 'code': code})
+
+@app.route('/api/clan/leave', methods=['POST'])
+def api_clan_leave():
+    data = request.get_json() or {}
+    uid = data.get('user_id')
+    if not uid:
+        return jsonify({'ok': False})
+    u = get_user(uid)
+    if not u or not u.get('clan_id'):
+        return jsonify({'ok': False})
+    clan_id = 'clan:' + u['clan_id']
+    if u.get('clan_role') == 'owner':
+        redis_cmd('del', clan_id)
+    else:
+        redis_cmd('hincrby', clan_id, 'members', -1)
+    u['clan_id'] = ''
+    u['clan_role'] = ''
+    save_user(uid, u)
+    return jsonify({'ok': True})
+
+@app.route('/api/clan/info', methods=['POST'])
+def api_clan_info():
+    data = request.get_json() or {}
+    uid = data.get('user_id')
+    if not uid:
+        return jsonify({'ok': False})
+    u = get_user(uid)
+    if not u or not u.get('clan_id'):
+        return jsonify({'ok': True, 'in_clan': False})
+    clan_id = 'clan:' + u['clan_id']
+    clan = redis_cmd('hgetall', clan_id)
+    if not clan:
+        return jsonify({'ok': True, 'in_clan': False})
+    d = {}
+    for i in range(0, len(clan), 2):
+        d[clan[i]] = clan[i+1]
+    return jsonify({
+        'ok': True,
+        'in_clan': True,
+        'code': d.get('code', ''),
+        'name': d.get('name', ''),
+        'owner_name': d.get('owner_name', ''),
+        'members': int(d.get('members', 0)),
+        'ads_score': int(d.get('ads_score', 0)),
+        'shop_score': int(d.get('shop_score', 0)),
+        'daily_score': int(d.get('daily_score', 0)),
+        'total_score': int(d.get('total_score', 0)),
+        'role': u.get('clan_role', 'member')
+    })
+
+@app.route('/api/clan/ranking', methods=['POST'])
+def api_clan_ranking():
+    keys = redis_cmd('keys', 'clan:*')
+    clans = []
+    if keys:
+        for k in keys:
+            c = redis_cmd('hgetall', k)
+            if not c:
+                continue
+            d = {}
+            for i in range(0, len(c), 2):
+                d[c[i]] = c[i+1]
+            clans.append({
+                'name': d.get('name', ''),
+                'code': d.get('code', ''),
+                'members': int(d.get('members', 0)),
+                'ads': int(d.get('ads_score', 0)),
+                'shop': int(d.get('shop_score', 0)),
+                'daily': int(d.get('daily_score', 0)),
+                'total': int(d.get('total_score', 0))
+            })
+    clans.sort(key=lambda x: x['total'], reverse=True)
+    return jsonify({'ok': True, 'clans': clans[:20]})
 
 @app.route('/api/webhook', methods=['POST'])
 def api_webhook():
@@ -262,21 +498,14 @@ def api_webhook():
                 ref_id = parts[1].replace('ref_', '').strip()
         create_user(uid, name, uname, ref_id)
         if ref_id:
-            success = process_referral(uid, ref_id)
-            if success:
-                try:
-                    send_tg(int(ref_id), '🎉 صديقك ' + name + ' انضم عبر رابطك!\n💰 ربحت 100 MYT!')
-                except Exception as e:
-                    print('Notify error: ' + str(e))
+            process_referral(uid, ref_id)
         if txt.startswith('/start'):
             kb = {'inline_keyboard': [
                 [{'text': '⛏️ ابدأ التعدين', 'web_app': {'url': WEBAPP_URL}}],
                 [{'text': '👥 المجموعة', 'url': 'https://t.me/your_group'}]
             ]}
-            msg = 'أهلاً ' + name + '!\n💰 اجمع MYT من التطبيق!'
-            if ref_id:
-                msg += '\n🎁 تم إضافة 100 MYT لصديقك!'
-            send_tg(cid, msg, kb)
+            msg = 'أهلاً ' + name + '!'
+            send_tg(cid, msg)
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
