@@ -9,6 +9,9 @@ REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
 REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
 ADMIN_ID = 8063963886
 
+# ============================================
+# Redis Helper
+# ============================================
 def redis_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
         return None
@@ -44,15 +47,11 @@ def create_user(uid, name='User', username='', referred_by=''):
         'ref_earned': 0, 'checkin_day': 0, 'last_checkin': '',
         'ads_today': 0, 'last_ad_date': '',
         'daily_taps': 0, 'last_reset': '',
-        'referred_by': referred_by, 'wallet': '',
-        'clan_id': '', 'clan_role': '',
+        'referred_by': referred_by, 'ref_processed': '',
+        'wallet': '', 'clan_id': '', 'clan_role': '',
         'created_at': datetime.date.today().isoformat()
     })
     return True
-
-def gen_code(length=6):
-    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-    return ''.join(random.choice(chars) for _ in range(length))
 
 def get_today():
     return datetime.date.today().isoformat()
@@ -67,26 +66,41 @@ def reset_daily(uid, u):
         save_user(uid, u)
     return u
 
+def gen_code(length=6):
+    chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def send_tg(chat_id, text):
+    url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage'
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
+    data = urllib.parse.urlencode(payload).encode()
+    try:
+        req = urllib.request.Request(url, data=data)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print('TG error: ' + str(e))
+        return None
+
+# ============================================
+# Referral Logic (مصحح)
+# ============================================
 def process_referral(new_uid, ref_id):
-    """معالجة الإحالة - النسخة المصححة"""
     if not ref_id or str(ref_id) == str(new_uid):
         return False
     ref_user = get_user(ref_id)
     if not ref_user:
-        print('Referrer not found: ' + str(ref_id))
         return False
     new_user = get_user(new_uid)
     if not new_user:
         return False
-    # إذا المستخدم له مُحيل مختلف، ارفض
-    existing_ref = new_user.get('referred_by', '')
-    if existing_ref and str(existing_ref) != str(ref_id):
+    # إذا عولج مسبقاً
+    if new_user.get('ref_processed') == '1':
         return False
-    # إذا المستخدم استلم المكافأة من قبل (نفس المُحيل)
-    if existing_ref and str(existing_ref) == str(ref_id):
-        # تحقق إذا كان محفوظاً كـ "معالج"
-        if new_user.get('ref_processed') == '1':
-            return False
+    # إذا له مُحيل آخر
+    existing = new_user.get('referred_by', '')
+    if existing and str(existing) != str(ref_id):
+        return False
     # أعطِ المُحيل 100 MYT
     ref_balance = float(ref_user.get('balance', 0)) + 100.0
     ref_count = int(ref_user.get('referrals', 0)) + 1
@@ -101,22 +115,16 @@ def process_referral(new_uid, ref_id):
     save_user(new_uid, new_user)
     return True
 
-def send_tg(chat_id, text):
-    url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage'
-    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
-    data = urllib.parse.urlencode(payload).encode()
-    try:
-        req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return json.loads(r.read())
-    except Exception as e:
-        print('TG error: ' + str(e))
-        return None
-
+# ============================================
+# Home
+# ============================================
 @app.route('/')
 def home():
     return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>MYTOKEN API</title><style>body{background:#030607;color:#00ff88;font-family:Arial;text-align:center;padding:60px 20px}h1{font-size:44px;text-shadow:0 0 25px #00ff88}</style></head><body><h1>MYTOKEN API</h1><p>Server Online</p></body></html>'
 
+# ============================================
+# User APIs
+# ============================================
 @app.route('/api/referral', methods=['POST'])
 def api_referral():
     data = request.get_json() or {}
@@ -262,6 +270,131 @@ def api_ref_stats():
         'referred_by': u.get('referred_by', '')
     })
 
+# ============================================
+# Admin APIs
+# ============================================
+@app.route('/api/admin/stats', methods=['POST'])
+def api_admin_stats():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    keys = redis_cmd('keys', 'user:*')
+    if not keys:
+        return jsonify({'ok': True, 'total_users': 0, 'active_users': 0, 'total_balance': 0, 'total_refs': 0})
+    total_balance = 0
+    total_refs = 0
+    today = get_today()
+    active = 0
+    for k in keys:
+        u = redis_cmd('hgetall', k)
+        if not u:
+            continue
+        d = {}
+        for i in range(0, len(u), 2):
+            d[u[i]] = u[i+1]
+        total_balance += float(d.get('balance', 0))
+        total_refs += int(d.get('referrals', 0))
+        if d.get('last_reset') == today:
+            active += 1
+    return jsonify({
+        'ok': True,
+        'total_users': len(keys),
+        'active_users': active,
+        'total_balance': round(total_balance, 2),
+        'total_refs': total_refs
+    })
+
+@app.route('/api/admin/users', methods=['POST'])
+def api_admin_users():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    keys = redis_cmd('keys', 'user:*')
+    users = []
+    if keys:
+        for k in keys[:100]:
+            u = redis_cmd('hgetall', k)
+            if not u:
+                continue
+            d = {}
+            for i in range(0, len(u), 2):
+                d[u[i]] = u[i+1]
+            users.append({
+                'user_id': d.get('user_id', ''),
+                'first_name': d.get('first_name', ''),
+                'username': d.get('username', ''),
+                'balance': round(float(d.get('balance', 0)), 2),
+                'level': int(d.get('level', 1)),
+                'refs': int(d.get('referrals', 0)),
+                'taps': int(d.get('taps', 0))
+            })
+    users.sort(key=lambda x: x['balance'], reverse=True)
+    return jsonify({'ok': True, 'users': users})
+
+@app.route('/api/admin/give', methods=['POST'])
+def api_admin_give():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    target = data.get('target_id')
+    amount = float(data.get('amount', 0))
+    if not target or amount == 0:
+        return jsonify({'ok': False, 'error': 'missing'})
+    u = get_user(target)
+    if not u:
+        return jsonify({'ok': False, 'error': 'user not found'})
+    new_bal = float(u.get('balance', 0)) + amount
+    u['balance'] = new_bal
+    save_user(target, u)
+    return jsonify({'ok': True, 'new_balance': round(new_bal, 4)})
+
+@app.route('/api/admin/broadcast', methods=['POST'])
+def api_admin_broadcast():
+    data = request.get_json() or {}
+    if str(data.get('admin_id')) != str(ADMIN_ID):
+        return jsonify({'ok': False, 'error': 'unauthorized'})
+    text = data.get('text', '')
+    if not text:
+        return jsonify({'ok': False, 'error': 'no text'})
+    keys = redis_cmd('keys', 'user:*')
+    sent = 0
+    if keys:
+        for k in keys:
+            try:
+                target = k.replace('user:', '')
+                send_tg(int(target), '📢 ' + text)
+                sent += 1
+            except:
+                pass
+    return jsonify({'ok': True, 'sent': sent})
+
+# ============================================
+# Clan APIs
+# ============================================
+@app.route('/api/clan/ranking', methods=['POST'])
+def api_clan_ranking():
+    keys = redis_cmd('keys', 'clan:*')
+    clans = []
+    if keys:
+        for k in keys:
+            c = redis_cmd('hgetall', k)
+            if not c:
+                continue
+            d = {}
+            for i in range(0, len(c), 2):
+                d[c[i]] = c[i+1]
+            clans.append({
+                'name': d.get('name', ''),
+                'code': d.get('code', ''),
+                'members': int(d.get('members', 0)),
+                'total': int(d.get('total_score', 0))
+            })
+    clans.sort(key=lambda x: x['total'], reverse=True)
+    return jsonify({'ok': True, 'clans': clans[:20]})
+
+# ============================================
+# Telegram Webhook
+# ============================================
 @app.route('/api/webhook', methods=['POST'])
 def api_webhook():
     try:
@@ -292,5 +425,8 @@ def api_webhook():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
 
+# ============================================
+# Run
+# ============================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
