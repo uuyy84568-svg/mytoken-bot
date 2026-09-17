@@ -3,6 +3,9 @@ import json, os, urllib.request, urllib.parse, datetime, random
 
 app = Flask(__name__)
 
+# ============================================
+# الإعدادات
+# ============================================
 BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
 WEBAPP_URL = "https://tranquil-pony-287daf.netlify.app"
 REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
@@ -10,7 +13,22 @@ REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
 ADMIN_ID = 8063963886
 
 # ============================================
-# Redis Helper
+# CORS (مهم للاتصال من Netlify)
+# ============================================
+@app.after_request
+def add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    return '', 200
+
+# ============================================
+# Redis
 # ============================================
 def redis_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -83,7 +101,7 @@ def send_tg(chat_id, text):
         return None
 
 # ============================================
-# Referral Logic (مصحح)
+# الإحالة (مصححة)
 # ============================================
 def process_referral(new_uid, ref_id):
     if not ref_id or str(ref_id) == str(new_uid):
@@ -94,14 +112,11 @@ def process_referral(new_uid, ref_id):
     new_user = get_user(new_uid)
     if not new_user:
         return False
-    # إذا عولج مسبقاً
     if new_user.get('ref_processed') == '1':
         return False
-    # إذا له مُحيل آخر
     existing = new_user.get('referred_by', '')
     if existing and str(existing) != str(ref_id):
         return False
-    # أعطِ المُحيل 100 MYT
     ref_balance = float(ref_user.get('balance', 0)) + 100.0
     ref_count = int(ref_user.get('referrals', 0)) + 1
     ref_earned = float(ref_user.get('ref_earned', 0)) + 100.0
@@ -109,21 +124,20 @@ def process_referral(new_uid, ref_id):
     ref_user['referrals'] = ref_count
     ref_user['ref_earned'] = ref_earned
     save_user(ref_id, ref_user)
-    # حدّث المستخدم الجديد
     new_user['referred_by'] = str(ref_id)
     new_user['ref_processed'] = '1'
     save_user(new_uid, new_user)
     return True
 
 # ============================================
-# Home
+# الصفحة الرئيسية
 # ============================================
 @app.route('/')
 def home():
     return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>MYTOKEN API</title><style>body{background:#030607;color:#00ff88;font-family:Arial;text-align:center;padding:60px 20px}h1{font-size:44px;text-shadow:0 0 25px #00ff88}</style></head><body><h1>MYTOKEN API</h1><p>Server Online</p></body></html>'
 
 # ============================================
-# User APIs
+# APIs المستخدم
 # ============================================
 @app.route('/api/referral', methods=['POST'])
 def api_referral():
@@ -271,7 +285,7 @@ def api_ref_stats():
     })
 
 # ============================================
-# Admin APIs
+# APIs الأدمن
 # ============================================
 @app.route('/api/admin/stats', methods=['POST'])
 def api_admin_stats():
@@ -369,7 +383,7 @@ def api_admin_broadcast():
     return jsonify({'ok': True, 'sent': sent})
 
 # ============================================
-# Clan APIs
+# APIs الفرق
 # ============================================
 @app.route('/api/clan/ranking', methods=['POST'])
 def api_clan_ranking():
@@ -426,7 +440,7 @@ def api_webhook():
         return jsonify({'ok': False, 'error': str(e)})
 
 # ============================================
-# Run
+# التشغيل
 # ============================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
