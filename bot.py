@@ -8,8 +8,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# ============================================
+# الإعدادات
+# ============================================
 BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://reliable-dolphin-d7d504.netlify.app"
+WEBAPP_URL = "https://tranquil-pony-287daf.netlify.app"
 API_BASE = "https://mytoken-api.vercel.app"
 
 logging.basicConfig(
@@ -17,6 +20,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# ============================================
+# سيرفر Health (مطلوب لـ Render)
+# ============================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -32,6 +38,9 @@ def run_health_server():
     print('Health server running on port ' + str(port))
     server.serve_forever()
 
+# ============================================
+# دالة الاتصال بالـ API
+# ============================================
 def api_call(endpoint, data):
     try:
         url = API_BASE + endpoint
@@ -44,6 +53,9 @@ def api_call(endpoint, data):
         print('API error [' + endpoint + ']: ' + str(e))
         return None
 
+# ============================================
+# الأزرار
+# ============================================
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⛏️ ابدأ التعدين", web_app=WebAppInfo(url=WEBAPP_URL))],
@@ -51,6 +63,9 @@ def main_keyboard():
          InlineKeyboardButton("❓ مساعدة", callback_data="help")]
     ])
 
+# ============================================
+# أمر /start
+# ============================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     text = update.message.text or ''
@@ -73,7 +88,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 '👤 ' + (user.first_name or 'User') + '\n'
                 '💰 ربحت 100 MYT!'
             )
-            await context.bot.send_message(chat_id=int(ref_id), text=notify, parse_mode='Markdown')
+            await context.bot.send_message(
+                chat_id=int(ref_id),
+                text=notify,
+                parse_mode='Markdown'
+            )
         except Exception as e:
             print('Notify error: ' + str(e))
 
@@ -87,8 +106,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     if ref_id:
         msg = '🎁 *تم تفعيل رابط الإحالة!*\n\n' + msg
-    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=main_keyboard())
+    await update.message.reply_text(
+        msg,
+        parse_mode='Markdown',
+        reply_markup=main_keyboard()
+    )
 
+# ============================================
+# أمر /stats
+# ============================================
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     data = api_call('/api/user', {'user_id': user.id})
@@ -114,8 +140,15 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         '💎 *أرباح الإحالات:* `' + str(ref_earned) + '` MYT\n'
         '📅 *أيام التسجيل:* `' + str(day) + '/7`'
     )
-    await update.message.reply_text(txt, parse_mode='Markdown', reply_markup=main_keyboard())
+    await update.message.reply_text(
+        txt,
+        parse_mode='Markdown',
+        reply_markup=main_keyboard()
+    )
 
+# ============================================
+# أمر /balance
+# ============================================
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     data = api_call('/api/user', {'user_id': user.id})
@@ -128,6 +161,9 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode='Markdown'
     )
 
+# ============================================
+# أمر /help
+# ============================================
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     txt = (
         '🤖 *أوامر البوت*\n'
@@ -142,8 +178,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '• ادعُ أصدقاءك واحصل على 100 MYT لكل صديق\n'
         '• سجّل يومياً لمكافآت أكبر'
     )
-    await update.message.reply_text(txt, parse_mode='Markdown', reply_markup=main_keyboard())
+    await update.message.reply_text(
+        txt,
+        parse_mode='Markdown',
+        reply_markup=main_keyboard()
+    )
 
+# ============================================
+# الأزرار التفاعلية
+# ============================================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -173,6 +216,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         await query.message.reply_text(txt, parse_mode='Markdown')
 
+# ============================================
+# التشغيل الرئيسي
+# ============================================
 async def main() -> None:
     t = Thread(target=run_health_server, daemon=True)
     t.start()
