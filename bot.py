@@ -1,238 +1,380 @@
+# ============================================
+# MYTOKEN LEGENDARY BOT — bot.py
+# ============================================
+# بوت تعدين MYT المتكامل
+# يدعم: WebApp, Referral, Stats, Health Check
+# ============================================
+
 import asyncio
 import logging
 import os
 import json
 import urllib.request
+import urllib.parse
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-
-# ============================================
-# الإعدادات
-# ============================================
-BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://tranquil-pony-287daf.netlify.app"
-API_BASE = "https://mytoken-api.vercel.app"
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+from telegram import (
+    Update,
+    WebAppInfo,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
 )
 
 # ============================================
-# سيرفر Health (مطلوب لـ Render)
+# ⚙️ الإعدادات — عدّل هنا فقط
+# ============================================
+BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
+WEBAPP_URL = "https://regal-kitten-2da9af.netlify.app"
+API_BASE = "https://mytoken-api.vercel.app"
+BOT_USERNAME = "OOOOBBBBBBOT"
+SUPPORT_URL = "https://t.me/OOO0BBBBBBOT"
+CHANNEL_URL = "https://t.me/OOO0BBBBBBOT"
+
+# ============================================
+# 📋 Logging
+# ============================================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger("MYTOKEN_BOT")
+
+# ============================================
+# 🌐 Health Check Server (لـ Render)
 # ============================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b'MYTOKEN Bot is alive')
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>MYTOKEN BOT</title></head>
+        <body style="background:#080303;color:#00FF88;font-family:Arial;
+                     display:flex;align-items:center;justify-content:center;
+                     height:100vh;margin:0;flex-direction:column">
+            <h1 style="font-size:48px;text-shadow:0 0 20px #00FF88">MYTOKEN BOT</h1>
+            <p style="color:#a88888;font-size:18px">✅ Server is Online</p>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode("utf-8"))
+
     def log_message(self, format, *args):
-        pass
+        pass  # إسكات السجل
 
 def run_health_server():
-    port = int(os.environ.get('PORT', 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    print('Health server running on port ' + str(port))
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"✅ Health server running on port {port}")
     server.serve_forever()
 
 # ============================================
-# دالة الاتصال بالـ API
+# 🔧 دوال مساعدة
 # ============================================
-def api_call(endpoint, data):
+def api_get(endpoint: str) -> dict:
+    """جلب بيانات من API"""
     try:
-        url = API_BASE + endpoint
-        body = json.dumps(data).encode()
-        req = urllib.request.Request(url, data=body,
-            headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        url = f"{API_BASE}{endpoint}"
+        req = urllib.request.Request(url, headers={"User-Agent": "MYTOKEN-BOT"})
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except Exception as e:
-        print('API error [' + endpoint + ']: ' + str(e))
-        return None
+        logger.warning(f"API error [{endpoint}]: {e}")
+        return {}
 
-# ============================================
-# الأزرار
-# ============================================
+def fmt_number(n, decimals=4):
+    """تنسيق الأرقام"""
+    try:
+        n = float(n)
+        if n >= 1e9:
+            return f"{n/1e9:.2f}B"
+        if n >= 1e6:
+            return f"{n/1e6:.2f}M"
+        if n >= 1e3:
+            return f"{n/1e3:.2f}K"
+        return f"{n:.{decimals}f}"
+    except:
+        return "0.0000"
+
 def main_keyboard():
+    """أزرار رئيسية"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⛏️ ابدأ التعدين", web_app=WebAppInfo(url=WEBAPP_URL))],
-        [InlineKeyboardButton("📊 حسابي", callback_data="stats"),
-         InlineKeyboardButton("❓ مساعدة", callback_data="help")]
+        [InlineKeyboardButton(
+            "⛏️ ابدأ التعدين",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )],
+        [
+            InlineKeyboardButton("💰 حسابي", callback_data="account"),
+            InlineKeyboardButton("❓ مساعدة", callback_data="help"),
+        ],
+        [
+            InlineKeyboardButton("📢 قناة", url=CHANNEL_URL),
+            InlineKeyboardButton("💬 دعم", url=SUPPORT_URL),
+        ],
     ])
 
 # ============================================
-# أمر /start
+# 🎯 /start
 # ============================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    text = update.message.text or ''
-    ref_id = ''
-    parts = text.split(' ')
-    if len(parts) > 1 and parts[1].startswith('ref_'):
-        ref_id = parts[1].replace('ref_', '').strip()
+    first_name = user.first_name or "صديقي"
 
-    result = api_call('/api/referral', {
-        'user_id': user.id,
-        'name': user.first_name or 'User',
-        'username': user.username or '',
-        'referrer_id': ref_id
-    })
+    # معالجة الإحالة
+    ref_id = None
+    if context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            ref_id = arg.replace("ref_", "")
+            try:
+                # إرسال الإحالة للـ API
+                api_get(f"/api/register?id={user.id}&ref={ref_id}")
+            except Exception as e:
+                logger.warning(f"Ref error: {e}")
 
-    if ref_id and result and result.get('referral_processed'):
-        try:
-            notify = (
-                '🎉 *صديق جديد انضم!*\n\n'
-                '👤 ' + (user.first_name or 'User') + '\n'
-                '💰 ربحت 100 MYT!'
-            )
-            await context.bot.send_message(
-                chat_id=int(ref_id),
-                text=notify,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            print('Notify error: ' + str(e))
-
-    msg = (
-        '👋 *أهلاً ' + (user.first_name or 'User') + '*!\n\n'
-        '💰 اجمع MYT من التطبيق\n'
-        '🎁 100 MYT لكل صديق\n'
-        '📅 20 إعلان يومياً\n'
-        '⚡ 100 ضغطة يومياً\n\n'
-        '👇 اضغط الزر للبدء:'
+    text = (
+        f"👋 أهلاً <b>{first_name}</b>!\n\n"
+        f"⛏️ <b>مرحباً بك في MYTOKEN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 اجمع <b>MYT</b> من التطبيق\n"
+        f"🎁 كل صديق = <b>+100 MYT</b>\n"
+        f"📺 20 إعلان يومياً\n"
+        f"⚡ 100 ضغطة يومياً\n"
+        f"🎯 تسجيل يومي حتى <b>+100 MYT</b>\n"
+        f"👛 اسحب أرباحك بـ TON\n\n"
+        f"👇 اضغط الزر للبدء:"
     )
-    if ref_id:
-        msg = '🎁 *تم تفعيل رابط الإحالة!*\n\n' + msg
+
     await update.message.reply_text(
-        msg,
-        parse_mode='Markdown',
-        reply_markup=main_keyboard()
+        text,
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
     )
+    logger.info(f"✅ /start from {user.id} ({first_name})")
 
 # ============================================
-# أمر /stats
+# 💰 /balance أو /stats
 # ============================================
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    data = api_call('/api/user', {'user_id': user.id})
-    if not data or not data.get('ok'):
-        await update.message.reply_text('⚠️ لم أجد بياناتك.\nاضغط /start أولاً.')
+    data = api_get(f"/api/user?id={user.id}")
+
+    if not data or not data.get("exists"):
+        await update.message.reply_text(
+            "⚠️ لم تسجل بعد! اضغط /start للبدء.",
+            parse_mode="HTML",
+        )
         return
-    balance = round(data.get('balance', 0), 4)
-    energy = data.get('energy', 0)
-    max_energy = data.get('max_energy', 100)
-    level = data.get('level', 1)
-    taps = data.get('taps', 0)
-    refs = data.get('refs', 0)
-    ref_earned = round(data.get('ref_earned', 0), 2)
-    day = data.get('checkinDay', 0)
-    txt = (
-        '📊 *إحصائياتك*\n'
-        '━━━━━━━━━━━━━━\n\n'
-        '💰 *الرصيد:* `' + str(balance) + '` MYT\n'
-        '⚡ *الطاقة:* `' + str(energy) + '/' + str(max_energy) + '`\n'
-        '⭐ *المستوى:* `' + str(level) + '`\n'
-        '🎯 *النقرات:* `' + str(taps) + '`\n'
-        '👥 *الإحالات:* `' + str(refs) + '`\n'
-        '💎 *أرباح الإحالات:* `' + str(ref_earned) + '` MYT\n'
-        '📅 *أيام التسجيل:* `' + str(day) + '/7`'
-    )
-    await update.message.reply_text(
-        txt,
-        parse_mode='Markdown',
-        reply_markup=main_keyboard()
+
+    balance = fmt_number(data.get("balance", 0))
+    pending = fmt_number(data.get("pending", 0))
+    refs = data.get("refs", 0)
+    streak = data.get("streak", 0)
+    checkin_day = data.get("checkinDay", 0)
+    wallet = data.get("wallet", "")
+
+    wallet_text = f"<code>{wallet[:8]}...{wallet[-6:]}</code>" if wallet else "❌ غير متصل"
+
+    text = (
+        f"📊 <b>إحصائياتك</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 الاسم: <b>{user.first_name}</b>\n"
+        f"🆔 ID: <code>{user.id}</code>\n\n"
+        f"💰 الرصيد: <b>{balance} MYT</b>\n"
+        f"⏳ معلق: <b>{pending} MYT</b>\n"
+        f"👥 الإحالات: <b>{refs}</b>\n"
+        f"🔥 السلسلة: <b>{streak}</b>\n"
+        f"📅 أيام التسجيل: <b>{checkin_day}/7</b>\n"
+        f"👛 المحفظة: {wallet_text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━"
     )
 
-# ============================================
-# أمر /balance
-# ============================================
-async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    data = api_call('/api/user', {'user_id': user.id})
-    if not data or not data.get('ok'):
-        await update.message.reply_text('⚠️ اضغط /start أولاً.')
-        return
-    balance = round(data.get('balance', 0), 4)
-    await update.message.reply_text(
-        '💰 *رصيدك:* `' + str(balance) + '` MYT',
-        parse_mode='Markdown'
-    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "⛏️ فتح التطبيق",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="refresh_stats")],
+    ])
+
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 # ============================================
-# أمر /help
+# ❓ /help
 # ============================================
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    txt = (
-        '🤖 *أوامر البوت*\n'
-        '━━━━━━━━━━━━━━\n\n'
-        '🚀 /start — ابدأ اللعب\n'
-        '📊 /stats — إحصائياتك الكاملة\n'
-        '💰 /balance — رصيدك فقط\n'
-        '❓ /help — هذه القائمة\n\n'
-        '💡 *كيف تلعب؟*\n'
-        '• افتح التطبيق واضغط على العملة\n'
-        '• شاهد الإعلانات لجمع المزيد\n'
-        '• ادعُ أصدقاءك واحصل على 100 MYT لكل صديق\n'
-        '• سجّل يومياً لمكافآت أكبر'
-    )
-    await update.message.reply_text(
-        txt,
-        parse_mode='Markdown',
-        reply_markup=main_keyboard()
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        f"❓ <b>مساعدة MYTOKEN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>⛏️ كيف أبدأ؟</b>\n"
+        f"• اضغط /start\n"
+        f"• اضغط 'ابدأ التعدين'\n"
+        f"• انقر على العملة MYT\n\n"
+        f"<b>💰 كيف أربح؟</b>\n"
+        f"• كل ضغطة = 0.001 MYT\n"
+        f"• كل إعلان = 0.10 MYT\n"
+        f"• كل إحالة = +100 MYT\n"
+        f"• التسجيل اليومي يصل إلى +100 MYT\n\n"
+        f"<b>👛 كيف أسحب؟</b>\n"
+        f"• اربط محفظة TON من التطبيق\n"
+        f"• اذهب لصفحة 'حسابك'\n"
+        f"• اضغط 'Connect Wallet'\n\n"
+        f"<b>📋 الأوامر:</b>\n"
+        f"/start — البداية\n"
+        f"/stats — إحصائياتك\n"
+        f"/balance — رصيدك\n"
+        f"/help — هذه القائمة\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💬 للدعم: @OOO0BBBBBBOT"
     )
 
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "⛏️ افتح التطبيق",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )],
+        [InlineKeyboardButton("💬 الدعم", url=SUPPORT_URL)],
+    ])
+
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
 # ============================================
-# الأزرار التفاعلية
+# 📋 /balance (اختصار)
 # ============================================
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await cmd_stats(update, context)
+
+# ============================================
+# 🔘 Callback Handler (الأزرار)
+# ============================================
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = update.effective_user
-    if query.data == 'stats':
-        data = api_call('/api/user', {'user_id': user.id})
-        if not data or not data.get('ok'):
-            await query.message.reply_text('⚠️ اضغط /start أولاً.')
-            return
-        balance = round(data.get('balance', 0), 4)
-        level = data.get('level', 1)
-        refs = data.get('refs', 0)
-        txt = (
-            '📊 *إحصائياتك*\n\n'
-            '💰 الرصيد: `' + str(balance) + '` MYT\n'
-            '⭐ المستوى: `' + str(level) + '`\n'
-            '👥 الإحالات: `' + str(refs) + '`'
+    data = query.data
+
+    if data == "account":
+        user = query.from_user
+        info = api_get(f"/api/user?id={user.id}")
+        balance = fmt_number(info.get("balance", 0)) if info else "0.0000"
+        refs = info.get("refs", 0) if info else 0
+
+        text = (
+            f"👤 <b>حسابك</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"🆔 <code>{user.id}</code>\n"
+            f"💰 الرصيد: <b>{balance} MYT</b>\n"
+            f"👥 الإحالات: <b>{refs}</b>\n\n"
+            f"👇 افتح التطبيق للمزيد:"
         )
-        await query.message.reply_text(txt, parse_mode='Markdown')
-    elif query.data == 'help':
-        txt = (
-            '💡 *كيف تلعب؟*\n\n'
-            '⛏️ اضغط زر التعدين للبدء\n'
-            '📺 شاهد الإعلانات يومياً\n'
-            '👥 ادعُ أصدقاءك\n'
-            '📅 سجّل يومياً'
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "⛏️ افتح التطبيق",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
+        ])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+    elif data == "help":
+        text = (
+            f"❓ <b>مساعدة سريعة</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"⛏️ اضغط على العملة لجمع MYT\n"
+            f"📺 شاهد 20 إعلاناً يومياً\n"
+            f"🎁 سجّل يومياً حتى +100 MYT\n"
+            f"👥 ادعُ أصدقاءك (+100 لكل صديق)\n"
+            f"👛 اربط محفظة TON للسحب\n\n"
+            f"استخدم /help للتفاصيل الكاملة"
         )
-        await query.message.reply_text(txt, parse_mode='Markdown')
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
+        ])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+    elif data == "refresh_stats":
+        await query.answer("🔄 يتم التحديث...", show_alert=False)
+
+    elif data == "back":
+        user = query.from_user
+        text = (
+            f"👋 <b>{user.first_name}</b> — القائمة الرئيسية\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"👇 اختر من الأزرار:"
+        )
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=main_keyboard(),
+        )
 
 # ============================================
-# التشغيل الرئيسي
+# 🛠️ إعداد Menu Button
 # ============================================
-async def main() -> None:
+async def set_menu_button(app):
+    try:
+        await app.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="⛏️ افتح MYTOKEN",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        )
+        logger.info("✅ Menu button set successfully")
+    except Exception as e:
+        logger.warning(f"Menu button error: {e}")
+
+# ============================================
+# 🚀 Main
+# ============================================
+async def main():
+    # تشغيل Health Server
     t = Thread(target=run_health_server, daemon=True)
     t.start()
+
+    # بناء التطبيق
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    print("✅ Bot is running...")
+
+    # إضافة الأوامر
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # إعداد Menu Button
     await app.initialize()
+    await set_menu_button(app)
     await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("✅ MYTOKEN Bot is running...")
+    logger.info(f"🌐 WebApp: {WEBAPP_URL}")
+    logger.info(f"🔗 API: {API_BASE}")
+
+    # Polling
+    await app.updater.start_polling(
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=True,
+    )
+
+    # انتظار
     await asyncio.Event().wait()
 
+# ============================================
+# ▶️ نقطة الدخول
+# ============================================
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
