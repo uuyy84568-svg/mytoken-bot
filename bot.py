@@ -1,8 +1,8 @@
 # ============================================
 # MYTOKEN LEGENDARY BOT — bot.py
 # ============================================
-# بوت تعدين MYT المتكامل
-# يدعم: WebApp, Referral, Stats, Health Check
+# النسخة النهائية الآمنة
+# التوكن يُقرأ من Environment Variables فقط
 # ============================================
 
 import asyncio
@@ -10,7 +10,6 @@ import logging
 import os
 import json
 import urllib.request
-import urllib.parse
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
@@ -28,20 +27,41 @@ from telegram.ext import (
 )
 
 # ============================================
-# ⚙️ الإعدادات — عدّل هنا فقط
+# ⚙️ الإعدادات — تُقرأ من Environment
 # ============================================
-BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://regal-kitten-2da9af.netlify.app"
-API_BASE = "https://mytoken-api.vercel.app"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+# رابط الموقع (WebApp)
+WEBAPP_URL = os.environ.get(
+    "WEBAPP_URL",
+    "https://regal-kitten-2da9af.netlify.app"
+)
+
+# رابط API
+API_BASE = os.environ.get(
+    "API_BASE",
+    "https://mytoken-api.vercel.app"
+)
+
+# معلومات ثابتة
 BOT_USERNAME = "OOOOBBBBBBOT"
 SUPPORT_URL = "https://t.me/OOO0BBBBBBOT"
 CHANNEL_URL = "https://t.me/OOO0BBBBBBOT"
 
 # ============================================
+# ✅ التحقق من التوكن
+# ============================================
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "❌ BOT_TOKEN غير موجود في Environment Variables. "
+        "أضفه في Render → Environment."
+    )
+
+# ============================================
 # 📋 Logging
 # ============================================
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger("MYTOKEN_BOT")
@@ -54,34 +74,29 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head><title>MYTOKEN BOT</title></head>
-        <body style="background:#080303;color:#00FF88;font-family:Arial;
-                     display:flex;align-items:center;justify-content:center;
-                     height:100vh;margin:0;flex-direction:column">
-            <h1 style="font-size:48px;text-shadow:0 0 20px #00FF88">MYTOKEN BOT</h1>
-            <p style="color:#a88888;font-size:18px">✅ Server is Online</p>
-        </body>
-        </html>
-        """
+        html = """<!DOCTYPE html>
+<html><head><title>MYTOKEN BOT</title></head>
+<body style="background:#080303;color:#00FF88;font-family:Arial;
+display:flex;align-items:center;justify-content:center;
+height:100vh;margin:0;flex-direction:column">
+<h1 style="font-size:42px;text-shadow:0 0 20px #00FF88">MYTOKEN BOT</h1>
+<p style="color:#a88888;font-size:16px">✅ Server is Online</p>
+</body></html>"""
         self.wfile.write(html.encode("utf-8"))
 
-    def log_message(self, format, *args):
-        pass  # إسكات السجل
+    def log_message(self, *args):
+        pass
 
 def run_health_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    logger.info(f"✅ Health server running on port {port}")
+    logger.info(f"✅ Health server on port {port}")
     server.serve_forever()
 
 # ============================================
 # 🔧 دوال مساعدة
 # ============================================
 def api_get(endpoint: str) -> dict:
-    """جلب بيانات من API"""
     try:
         url = f"{API_BASE}{endpoint}"
         req = urllib.request.Request(url, headers={"User-Agent": "MYTOKEN-BOT"})
@@ -91,22 +106,17 @@ def api_get(endpoint: str) -> dict:
         logger.warning(f"API error [{endpoint}]: {e}")
         return {}
 
-def fmt_number(n, decimals=4):
-    """تنسيق الأرقام"""
+def fmt_number(n, d=4):
     try:
         n = float(n)
-        if n >= 1e9:
-            return f"{n/1e9:.2f}B"
-        if n >= 1e6:
-            return f"{n/1e6:.2f}M"
-        if n >= 1e3:
-            return f"{n/1e3:.2f}K"
-        return f"{n:.{decimals}f}"
+        if n >= 1e9: return f"{n/1e9:.2f}B"
+        if n >= 1e6: return f"{n/1e6:.2f}M"
+        if n >= 1e3: return f"{n/1e3:.2f}K"
+        return f"{n:.{d}f}"
     except:
         return "0.0000"
 
 def main_keyboard():
-    """أزرار رئيسية"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
             "⛏️ ابدأ التعدين",
@@ -130,13 +140,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "صديقي"
 
     # معالجة الإحالة
-    ref_id = None
     if context.args and len(context.args) > 0:
         arg = context.args[0]
         if arg.startswith("ref_"):
             ref_id = arg.replace("ref_", "")
             try:
-                # إرسال الإحالة للـ API
                 api_get(f"/api/register?id={user.id}&ref={ref_id}")
             except Exception as e:
                 logger.warning(f"Ref error: {e}")
@@ -162,7 +170,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"✅ /start from {user.id} ({first_name})")
 
 # ============================================
-# 💰 /balance أو /stats
+# 💰 /stats
 # ============================================
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -203,10 +211,15 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⛏️ فتح التطبيق",
             web_app=WebAppInfo(url=WEBAPP_URL),
         )],
-        [InlineKeyboardButton("🔄 تحديث", callback_data="refresh_stats")],
     ])
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+# ============================================
+# 💰 /balance
+# ============================================
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await cmd_stats(update, context)
 
 # ============================================
 # ❓ /help
@@ -223,7 +236,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• كل ضغطة = 0.001 MYT\n"
         f"• كل إعلان = 0.10 MYT\n"
         f"• كل إحالة = +100 MYT\n"
-        f"• التسجيل اليومي يصل إلى +100 MYT\n\n"
+        f"• التسجيل اليومي حتى +100 MYT\n\n"
         f"<b>👛 كيف أسحب؟</b>\n"
         f"• اربط محفظة TON من التطبيق\n"
         f"• اذهب لصفحة 'حسابك'\n"
@@ -248,13 +261,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 # ============================================
-# 📋 /balance (اختصار)
-# ============================================
-async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await cmd_stats(update, context)
-
-# ============================================
-# 🔘 Callback Handler (الأزرار)
+# 🔘 Callback Handler
 # ============================================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -301,9 +308,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
-    elif data == "refresh_stats":
-        await query.answer("🔄 يتم التحديث...", show_alert=False)
-
     elif data == "back":
         user = query.from_user
         text = (
@@ -318,7 +322,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# 🛠️ إعداد Menu Button
+# 🛠️ ضبط Menu Button
 # ============================================
 async def set_menu_button(app):
     try:
@@ -328,7 +332,7 @@ async def set_menu_button(app):
                 web_app=WebAppInfo(url=WEBAPP_URL),
             )
         )
-        logger.info("✅ Menu button set successfully")
+        logger.info("✅ Menu button set")
     except Exception as e:
         logger.warning(f"Menu button error: {e}")
 
@@ -336,21 +340,17 @@ async def set_menu_button(app):
 # 🚀 Main
 # ============================================
 async def main():
-    # تشغيل Health Server
     t = Thread(target=run_health_server, daemon=True)
     t.start()
 
-    # بناء التطبيق
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # إضافة الأوامر
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # إعداد Menu Button
     await app.initialize()
     await set_menu_button(app)
     await app.start()
@@ -359,22 +359,20 @@ async def main():
     logger.info(f"🌐 WebApp: {WEBAPP_URL}")
     logger.info(f"🔗 API: {API_BASE}")
 
-    # Polling
     await app.updater.start_polling(
         allowed_updates=["message", "callback_query"],
         drop_pending_updates=True,
     )
 
-    # انتظار
     await asyncio.Event().wait()
 
 # ============================================
-# ▶️ نقطة الدخول
+# ▶️ Entry Point
 # ============================================
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
+        logger.info("🛑 Bot stopped")
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"❌ Fatal: {e}")
