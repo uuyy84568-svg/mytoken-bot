@@ -1,280 +1,364 @@
-import json, os, urllib.request, urllib.parse, datetime, random
+# MYTOKEN API v2 - Python + Upstash Redis
+import json, os, datetime, urllib.request, urllib.parse
+from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = "8063963886:AAFC70T-QidXV9M2U8k2hj1tpc_jlHaGMI0"
-WEBAPP_URL = "https://teal-tartufo-5a611a.netlify.app"
-REDIS_URL = os.environ.get('UPSTASH_REDIS_REST_URL', '')
-REDIS_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
-
-CORS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Content-Type': 'application/json; charset=utf-8'
-}
-
-def json_resp(data, status=200):
-    return {'statusCode': status, 'headers': CORS, 'body': json.dumps(data, ensure_ascii=False)}
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "8063963886"))
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "https://regal-kitten-2da9af.netlify.app")
 
 def redis_cmd(*args):
-    if not REDIS_URL or not REDIS_TOKEN:
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
         return None
     try:
-        url = REDIS_URL.rstrip('/') + '/' + '/'.join(urllib.parse.quote(str(a), safe='') for a in args)
-        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + REDIS_TOKEN})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return json.loads(r.read().decode()).get('result')
+        url = UPSTASH_URL.rstrip("/") + "/" + "/".join(urllib.parse.quote(str(a), safe="") for a in args)
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + UPSTASH_TOKEN})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode()).get("result")
     except Exception as e:
-        print('Redis error: ' + str(e))
+        print("[Redis]", e)
         return None
+
+def redis_pipe(commands):
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        return []
+    try:
+        url = UPSTASH_URL.rstrip("/") + "/pipeline"
+        data = json.dumps([list(c) for c in commands]).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": "Bearer " + UPSTASH_TOKEN,
+            "Content-Type": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return [x.get("result") for x in json.loads(r.read().decode())]
+    except Exception as e:
+        print("[Pipe]", e)
+        return []
+
+def ukey(uid): return "user:" + str(uid)
 
 def get_user(uid):
-    data = redis_cmd('hgetall', 'user:' + str(uid))
-    if not data:
-        return None
-    result = {}
-    for i in range(0, len(data), 2):
-        result[data[i]] = data[i+1]
-    return result
+    h = redis_cmd("HGETALL", ukey(uid))
+    if not h: return None
+    d = {}
+    if isinstance(h, list):
+        for i in range(0, len(h), 2):
+            d[h[i]] = h[i+1]
+    elif isinstance(h, dict):
+        d = h
+    return d
 
-def save_user(uid, data):
-    for k, v in data.items():
-        redis_cmd('hset', 'user:' + str(uid), k, str(v))
+def save_user(uid, fields):
+    cmds = [("HSET", ukey(uid), k, str(v)) for k, v in fields.items()]
+    cmds.append(("SADD", "users", str(uid)))
+    redis_pipe(cmds)
 
-def create_user(uid, name='User', username='', referred_by=''):
-    if get_user(uid):
-        return False
-    save_user(uid, {
-        'user_id': uid, 'first_name': name, 'username': username,
-        'balance': 0, 'energy': 100, 'max_energy': 100,
-        'level': 1, 'xp': 0, 'taps': 0, 'referrals': 0,
-        'ref_earned': 0, 'checkin_day': 0, 'last_checkin': '',
-        'ads_today': 0, 'last_ad_date': '',
-        'daily_taps': 0, 'last_reset': '',
-        'referred_by': referred_by, 'wallet': '',
-        'created_at': datetime.date.today().isoformat()
-    })
-    return True
-
-def get_today():
-    return datetime.date.today().isoformat()
-
-def reset_daily(uid, u):
-    today = get_today()
-    if u.get('last_reset') != today:
-        u['energy'] = u.get('max_energy', '100')
-        u['daily_taps'] = '0'
-        u['ads_today'] = '0'
-        u['last_reset'] = today
-        save_user(uid, u)
-    return u
-
-def process_referral(new_uid, ref_id):
-    if not ref_id or str(ref_id) == str(new_uid):
-        return False
-    ref_user = get_user(ref_id)
-    if not ref_user:
-        return False
-    new_user = get_user(new_uid)
-    if new_user and new_user.get('referred_by'):
-        return False
-    ref_balance = float(ref_user.get('balance', 0)) + 100.0
-    ref_count = int(ref_user.get('referrals', 0)) + 1
-    ref_earned = float(ref_user.get('ref_earned', 0)) + 100.0
-    ref_user['balance'] = ref_balance
-    ref_user['referrals'] = ref_count
-    ref_user['ref_earned'] = ref_earned
-    save_user(ref_id, ref_user)
-    if new_user:
-        new_user['referred_by'] = str(ref_id)
-        save_user(new_uid, new_user)
-    return True
-
-def send_tg(chat_id, text, keyboard=None):
-    url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage'
-    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
-    if keyboard:
-        payload['reply_markup'] = json.dumps(keyboard)
-    data = urllib.parse.urlencode(payload).encode()
+def n(v, d=0):
     try:
-        req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return json.loads(r.read())
-    except Exception as e:
-        print('TG error: ' + str(e))
-        return None
-
-def api_referral(data):
-    uid = data.get('user_id')
-    ref_id = data.get('referrer_id')
-    name = data.get('name', 'User')
-    username = data.get('username', '')
-    if not uid:
-        return json_resp({'ok': False, 'error': 'no user_id'})
-    create_user(uid, name, username, str(ref_id) if ref_id else '')
-    if ref_id:
-        success = process_referral(uid, ref_id)
-        return json_resp({'ok': True, 'referral_processed': success})
-    return json_resp({'ok': True, 'referral_processed': False})
-
-def api_user(data):
-    uid = data.get('user_id')
-    if not uid:
-        return json_resp({'ok': False, 'error': 'no user_id'})
-    u = get_user(uid)
-    if not u:
-        return json_resp({'ok': False, 'error': 'not found'})
-    u = reset_daily(uid, u)
-    return json_resp({
-        'ok': True,
-        'balance': float(u.get('balance', 0)),
-        'energy': int(u.get('energy', 100)),
-        'max_energy': int(u.get('max_energy', 100)),
-        'level': int(u.get('level', 1)),
-        'xp': int(u.get('xp', 0)),
-        'taps': int(u.get('taps', 0)),
-        'refs': int(u.get('referrals', 0)),
-        'ref_earned': float(u.get('ref_earned', 0)),
-        'checkinDay': int(u.get('checkin_day', 0)),
-        'dailyTaps': int(u.get('daily_taps', 0)),
-        'username': u.get('username', ''),
-        'first_name': u.get('first_name', 'User'),
-        'wallet': u.get('wallet', '')
-    })
-
-def api_tap(data):
-    uid = data.get('user_id')
-    taps = int(data.get('taps', 0))
-    if not uid or taps <= 0:
-        return json_resp({'ok': False})
-    u = get_user(uid)
-    if not u:
-        return json_resp({'ok': False})
-    energy = int(u.get('energy', 100))
-    bal = float(u.get('balance', 0))
-    total = int(u.get('taps', 0))
-    daily = int(u.get('daily_taps', 0))
-    if energy < taps:
-        taps = energy
-    if daily + taps > 100:
-        taps = max(0, 100 - daily)
-    new_bal = bal + taps * 0.001
-    new_energy = energy - taps
-    u['energy'] = new_energy
-    u['balance'] = new_bal
-    u['taps'] = total + taps
-    u['daily_taps'] = daily + taps
-    save_user(uid, u)
-    return json_resp({'ok': True, 'balance': round(new_bal, 4), 'energy': new_energy, 'dailyTaps': daily + taps})
-
-def api_ad(data):
-    uid = data.get('user_id')
-    if not uid:
-        return json_resp({'ok': False})
-    u = get_user(uid)
-    if not u:
-        return json_resp({'ok': False})
-    today = get_today()
-    ads = int(u.get('ads_today', 0)) if u.get('last_ad_date') == today else 0
-    if ads >= 20:
-        return json_resp({'ok': False, 'error': 'limit'})
-    new_bal = float(u.get('balance', 0)) + 0.10
-    u['balance'] = new_bal
-    u['ads_today'] = ads + 1
-    u['last_ad_date'] = today
-    save_user(uid, u)
-    return json_resp({'ok': True, 'reward': 0.10, 'balance': round(new_bal, 4)})
-
-def api_checkin(data):
-    uid = data.get('user_id')
-    if not uid:
-        return json_resp({'ok': False})
-    u = get_user(uid)
-    if not u:
-        return json_resp({'ok': False})
-    today = get_today()
-    if u.get('last_checkin') == today:
-        return json_resp({'ok': False, 'error': 'already'})
-    day = int(u.get('checkin_day', 0))
-    rewards = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0]
-    new_day = day + 1 if day < 7 else 1
-    reward = rewards[new_day - 1]
-    new_bal = float(u.get('balance', 0)) + reward
-    u['checkin_day'] = new_day
-    u['last_checkin'] = today
-    u['balance'] = new_bal
-    save_user(uid, u)
-    return json_resp({'ok': True, 'reward': reward, 'day': new_day, 'balance': round(new_bal, 4)})
-
-def api_wallet_save(data):
-    uid = data.get('user_id')
-    wallet = data.get('wallet', '').strip()
-    if not uid:
-        return json_resp({'ok': False})
-    u = get_user(uid)
-    if not u:
-        return json_resp({'ok': False})
-    u['wallet'] = wallet
-    save_user(uid, u)
-    return json_resp({'ok': True, 'wallet': wallet})
-
-def api_webhook(data):
-    try:
-        if 'message' not in data:
-            return json_resp({'ok': True})
-        m = data['message']
-        cid = m['chat']['id']
-        txt = m.get('text', '')
-        f = m['from']
-        uid = f['id']
-        name = f.get('first_name', 'User')
-        uname = f.get('username', '')
-        ref_id = ''
-        if txt.startswith('/start'):
-            parts = txt.split(' ')
-            if len(parts) > 1 and parts[1].startswith('ref_'):
-                ref_id = parts[1].replace('ref_', '').strip()
-        create_user(uid, name, uname, ref_id)
-        if ref_id:
-            success = process_referral(uid, ref_id)
-            if success:
-                try:
-                    send_tg(int(ref_id), '🎉 صديقك ' + name + ' انضم عبر رابطك!\n💰 ربحت 100 MYT!')
-                except Exception as e:
-                    print('Notify error: ' + str(e))
-        if txt.startswith('/start'):
-            kb = {'inline_keyboard': [
-                [{'text': '⛏️ ابدأ التعدين', 'web_app': {'url': WEBAPP_URL}}],
-                [{'text': '👥 المجموعة', 'url': 'https://t.me/your_group'}]
-            ]}
-            msg = 'أهلاً ' + name + '!\n💰 اجمع MYT من التطبيق!'
-            if ref_id:
-                msg += '\n🎁 تم إضافة 100 MYT لصديقك!'
-            send_tg(cid, msg, kb)
-        return json_resp({'ok': True})
-    except Exception as e:
-        return json_resp({'ok': False, 'error': str(e)})
-
-def handler(event, context):
-    path = event.get('path', '/')
-    if path == '/' or path == '':
-        html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>MYTOKEN API</title><style>body{background:#030607;color:#00ff88;font-family:Arial;text-align:center;padding:60px 20px}h1{font-size:44px;text-shadow:0 0 25px #00ff88}</style></head><body><h1>MYTOKEN API</h1><p>Server Online</p></body></html>'
-        return {'statusCode': 200, 'headers': {'Content-Type': 'text/html; charset=utf-8'}, 'body': html}
-    if event.get('httpMethod') == 'OPTIONS':
-        return {'statusCode': 200, 'headers': CORS, 'body': ''}
-    try:
-        data = json.loads(event.get('body', '{}') or '{}')
+        x = float(v)
+        return int(x) if x.is_integer() else x
     except:
-        data = {}
-    routes = {
-        '/api/webhook': api_webhook,
-        '/api/user': api_user,
-        '/api/tap': api_tap,
-        '/api/ad': api_ad,
-        '/api/checkin': api_checkin,
-        '/api/referral': api_referral,
-        '/api/wallet_save': api_wallet_save
-    }
-    fn = routes.get(path)
-    if fn:
-        return fn(data)
-    return json_resp({'ok': False, 'error': 'not found'}, 404)
+        return d
+
+class handler(BaseHTTPRequestHandler):
+    def _send(self, data, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def _body(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length == 0: return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except:
+            return {}
+
+    def do_OPTIONS(self): self._send({})
+
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        body = {k: v[0] for k, v in qs.items()}
+        self._route(path, body)
+
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        self._route(path, self._body())
+
+    def _route(self, path, body):
+        try:
+            if path.endswith("/"): path = path[:-1]
+            routes = {
+                "/api/user": self.h_user,
+                "/api/register": self.h_register,
+                "/api/tap": self.h_tap,
+                "/api/ad": self.h_ad,
+                "/api/claim": self.h_claim,
+                "/api/checkin": self.h_checkin,
+                "/api/wallet": self.h_wallet,
+                "/api/ref_stats": self.h_ref_stats,
+                "/api/admin/stats": self.h_a_stats,
+                "/api/admin/users": self.h_a_users,
+                "/api/admin/give": self.h_a_give,
+                "/api/admin/broadcast": self.h_a_broadcast,
+                "/api/clan/ranking": self.h_clans
+            }
+            if path in routes:
+                return routes[path](body)
+            if path in ("", "/"):
+                return self._send({"ok": True, "name": "MYTOKEN API", "status": "online"})
+            return self._send({"ok": False, "error": "Not found"}, 404)
+        except Exception as e:
+            print("[ERR]", e)
+            return self._send({"ok": False, "error": str(e)}, 500)
+
+    # === USER HANDLERS ===
+    def h_user(self, body):
+        uid = body.get("id") or body.get("user_id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        u = get_user(uid)
+        if not u: return self._send({"ok": True, "exists": False})
+        redis_cmd("HSET", ukey(uid), "last_active", "now")
+        return self._send({
+            "ok": True, "exists": True,
+            "balance": n(u.get("balance", 0)),
+            "pending": n(u.get("pending", 0)),
+            "refs": n(u.get("refs", 0)),
+            "streak": n(u.get("streak", 0)),
+            "checkinDay": n(u.get("checkin_day", 0)),
+            "canCheckin": u.get("can_checkin", "1") == "1",
+            "achievements": [],
+            "wallet": u.get("wallet", ""),
+            "ads": n(u.get("ads", 0)),
+            "taps": n(u.get("taps", 0)),
+            "clicks": n(u.get("taps", 0)),
+            "level": n(u.get("level", 1)),
+            "first_name": u.get("first_name", "User")
+        })
+
+    def h_register(self, body):
+        uid = body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        ref = body.get("ref")
+        first_name = body.get("first_name", "User")
+        if get_user(uid):
+            return self._send({"ok": True, "exists": True, "isNew": False})
+        save_user(uid, {
+            "telegram_id": uid, "first_name": first_name,
+            "balance": 0, "pending": 0, "refs": 0, "streak": 0,
+            "checkin_day": 0, "can_checkin": 1, "wallet": "",
+            "ads": 0, "taps": 0, "level": 1,
+            "created_at": "now", "last_active": "now"
+        })
+        if ref:
+            ref = str(int(ref))
+            if ref != uid and get_user(ref):
+                redis_pipe([
+                    ("HINCRBY", ukey(ref), "refs", 1),
+                    ("HINCRBYFLOAT", ukey(ref), "balance", 100),
+                    ("HSET", ukey(uid), "referred_by", ref)
+                ])
+        return self._send({"ok": True, "exists": True, "isNew": True})
+
+    def h_tap(self, body):
+        uid = body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        cnt = min(int(body.get("count", 0)), 500)
+        if cnt <= 0: return self._send({"ok": False, "error": "Invalid count"}, 400)
+        if not get_user(uid): return self._send({"ok": True, "exists": False})
+        reward = 0.001 * cnt
+        redis_pipe([
+            ("HINCRBY", ukey(uid), "taps", cnt),
+            ("HINCRBYFLOAT", ukey(uid), "balance", reward),
+            ("HSET", ukey(uid), "last_active", "now")
+        ])
+        u = get_user(uid)
+        return self._send({"ok": True, "balance": n(u.get("balance", 0)), "taps": n(u.get("taps", 0)), "added": cnt})
+
+    def h_ad(self, body):
+        uid = body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        if not get_user(uid): return self._send({"ok": True, "exists": False})
+        reward = 0.10
+        redis_pipe([
+            ("HINCRBY", ukey(uid), "ads", 1),
+            ("HINCRBYFLOAT", ukey(uid), "balance", reward),
+            ("HINCRBYFLOAT", ukey(uid), "pending", reward),
+            ("HSET", ukey(uid), "last_active", "now")
+        ])
+        u = get_user(uid)
+        return self._send({"ok": True, "balance": n(u.get("balance", 0)), "pending": n(u.get("pending", 0)), "ads": n(u.get("ads", 0))})
+
+    def h_claim(self, body):
+        uid = body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        u = get_user(uid)
+        if not u: return self._send({"ok": True, "exists": False})
+        pending = n(u.get("pending", 0))
+        if pending <= 0:
+            return self._send({"ok": True, "balance": n(u.get("balance", 0)), "pending": 0})
+        redis_pipe([
+            ("HINCRBYFLOAT", ukey(uid), "balance", pending),
+            ("HSET", ukey(uid), "pending", 0)
+        ])
+        u = get_user(uid)
+        return self._send({"ok": True, "balance": n(u.get("balance", 0)), "pending": 0})
+
+    def h_checkin(self, body):
+        uid = body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        u = get_user(uid)
+        if not u: return self._send({"ok": True, "exists": False})
+        today = datetime.date.today().isoformat()
+        if u.get("last_checkin", "") == today:
+            return self._send({"ok": False, "error": "already"})
+        REWARDS = [0.20, 0.50, 1, 2, 5, 10, 100]
+        day = n(u.get("checkin_day", 0))
+        if day >= 7: day = 0
+        day += 1
+        reward = REWARDS[day - 1]
+        streak = n(u.get("streak", 0)) + 1
+        redis_pipe([
+            ("HINCRBYFLOAT", ukey(uid), "balance", reward),
+            ("HSET", ukey(uid), "checkin_day", day),
+            ("HSET", ukey(uid), "last_checkin", today),
+            ("HSET", ukey(uid), "can_checkin", 0),
+            ("HSET", ukey(uid), "streak", streak)
+        ])
+        u = get_user(uid)
+        return self._send({"ok": True, "day": day, "reward": reward, "balance": n(u.get("balance", 0)), "streak": streak})
+
+    def h_wallet(self, body):
+        uid = body.get("id")
+        wallet = body.get("wallet", "")
+        if not uid or not wallet:
+            return self._send({"ok": False, "error": "Missing data"}, 400)
+        uid = str(int(uid))
+        if not get_user(uid): return self._send({"ok": True, "exists": False})
+        redis_cmd("HSET", ukey(uid), "wallet", wallet)
+        return self._send({"ok": True, "wallet": wallet})
+
+    def h_ref_stats(self, body):
+        uid = body.get("user_id") or body.get("id")
+        if not uid: return self._send({"ok": False, "error": "Missing id"}, 400)
+        uid = str(int(uid))
+        u = get_user(uid)
+        return self._send({"ok": True, "referrals": n((u or {}).get("refs", 0)), "refs": n((u or {}).get("refs", 0))})
+
+    # === ADMIN HANDLERS ===
+    def _admin(self, body):
+        try:
+            return int(body.get("admin_id", 0)) == ADMIN_ID
+        except:
+            return False
+
+    def h_a_stats(self, body):
+        if not self._admin(body):
+            return self._send({"ok": False, "error": "Forbidden"}, 403)
+        uids = redis_cmd("SMEMBERS", "users") or []
+        if not isinstance(uids, list): uids = []
+        tot_bal = tot_refs = tot_ads = tot_chk = tot_taps = tot_wal = 0
+        for uid in uids[:500]:
+            u = get_user(uid)
+            if not u: continue
+            tot_bal += n(u.get("balance", 0))
+            tot_refs += n(u.get("refs", 0))
+            tot_ads += n(u.get("ads", 0))
+            tot_chk += n(u.get("checkin_day", 0))
+            tot_taps += n(u.get("taps", 0))
+            if u.get("wallet"): tot_wal += 1
+        return self._send({
+            "ok": True,
+            "total_users": len(uids),
+            "active_users": len(uids),
+            "total_balance": round(tot_bal, 2),
+            "total_refs": tot_refs,
+            "total_ads": tot_ads,
+            "total_checkins": tot_chk,
+            "total_taps": tot_taps,
+            "total_wallets": tot_wal
+        })
+
+    def h_a_users(self, body):
+        if not self._admin(body):
+            return self._send({"ok": False, "error": "Forbidden"}, 403)
+        uids = redis_cmd("SMEMBERS", "users") or []
+        if not isinstance(uids, list): uids = []
+        result = []
+        for uid in uids[:200]:
+            u = get_user(uid)
+            if not u: continue
+            result.append({
+                "user_id": int(uid),
+                "first_name": u.get("first_name", "User"),
+                "balance": round(n(u.get("balance", 0)), 4),
+                "level": n(u.get("level", 1)),
+                "refs": n(u.get("refs", 0)),
+                "ads": n(u.get("ads", 0)),
+                "checkin": n(u.get("checkin_day", 0)),
+                "taps": n(u.get("taps", 0)),
+                "wallet": u.get("wallet", "")
+            })
+        result.sort(key=lambda x: x["balance"], reverse=True)
+        return self._send({"ok": True, "users": result, "count": len(result)})
+
+    def h_a_give(self, body):
+        if not self._admin(body):
+            return self._send({"ok": False, "error": "Forbidden"}, 403)
+        target = body.get("target_id")
+        try:
+            amount = float(body.get("amount", 0))
+        except:
+            amount = 0
+        if not target or amount <= 0:
+            return self._send({"ok": False, "error": "Invalid data"}, 400)
+        target = str(int(target))
+        if not get_user(target):
+            return self._send({"ok": False, "error": "User not found"}, 404)
+        redis_cmd("HINCRBYFLOAT", ukey(target), "balance", amount)
+        u = get_user(target)
+        return self._send({"ok": True, "new_balance": n(u.get("balance", 0))})
+
+    def h_a_broadcast(self, body):
+        if not self._admin(body):
+            return self._send({"ok": False, "error": "Forbidden"}, 403)
+        text = body.get("text", "").strip()
+        if not text:
+            return self._send({"ok": False, "error": "Missing text"}, 400)
+        if not BOT_TOKEN:
+            return self._send({"ok": False, "error": "BOT_TOKEN not set"}, 500)
+        uids = redis_cmd("SMEMBERS", "users") or []
+        if not isinstance(uids, list): uids = []
+        sent = 0
+        failed = 0
+        for uid in uids:
+            try:
+                data = json.dumps({"chat_id": int(uid), "text": text, "parse_mode": "HTML"}).encode()
+                req = urllib.request.Request(
+                    "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage",
+                    data=data,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    if json.loads(r.read().decode()).get("ok"):
+                        sent += 1
+                    else:
+                        failed += 1
+            except:
+                failed += 1
+        return self._send({"ok": True, "sent": sent, "failed": failed})
+
+    def h_clans(self, body):
+        return self._send({"ok": True, "clans": []})
