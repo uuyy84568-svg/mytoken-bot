@@ -138,40 +138,66 @@ def main_keyboard():
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     first_name = user.first_name or "صديقي"
-
-    # معالجة الإحالة
+    ref_id = None
     if context.args and len(context.args) > 0:
         arg = context.args[0]
         if arg.startswith("ref_"):
-            ref_id = arg.replace("ref_", "")
-            try:
-                api_get(f"/api/register?id={user.id}&ref={ref_id}")
-            except Exception as e:
-                logger.warning(f"Ref error: {e}")
-
+            ref_id = arg.replace("ref_", "").strip()
+    result = None
+    try:
+        payload = {"id": user.id, "first_name": first_name}
+        if ref_id:
+            payload["ref"] = ref_id
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            API_BASE + "/api/register",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            result = json.loads(r.read().decode())
+        logger.info(f"Register: {result}")
+    except Exception as e:
+        logger.warning(f"Ref error: {e}")
+    if result and result.get("isNew") and ref_id:
+        try:
+            await context.bot.send_message(
+                chat_id=int(ref_id),
+                text="🎉 <b>صديق جديد انضم عبر رابطك!</b>
+💰 +100 MYT
+👥 إحالاتك +1",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"Notify: {e}")
     text = (
-        f"👋 أهلاً <b>{first_name}</b>!\n\n"
-        f"⛏️ <b>مرحباً بك في MYTOKEN</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"💰 اجمع <b>MYT</b> من التطبيق\n"
-        f"🎁 كل صديق = <b>+100 MYT</b>\n"
-        f"📺 20 إعلان يومياً\n"
-        f"⚡ 100 ضغطة يومياً\n"
-        f"🎯 تسجيل يومي حتى <b>+100 MYT</b>\n"
-        f"👛 اسحب أرباحك بـ TON\n\n"
-        f"👇 اضغط الزر للبدء:"
-    )
+        f"👋 أهلاً <b>{first_name}</b>!
+"
+        f"⛏️ <b>مرحباً بك في MYTOKEN</b>
+"
+        f"━━━━━━━━━━━━━━━━━━
 
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=main_keyboard(),
+"
+        f"💰 اربح <b>MYT</b> من:
+"
+        f"🎁 دعوة صديق = <b>+100 MYT</b>
+"
+        f"📺 20 إعلان يومياً
+"
+        f"⚡ 100 ضغطة يومياً
+"
+        f"🎯 تسجيل يومي حتى <b>+100 MYT</b>
+
+"
+        f"👛 اربط محفظة TON
+
+"
+        f"👇 ابدأ الآن:"
     )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_keyboard())
     logger.info(f"✅ /start from {user.id} ({first_name})")
 
-# ============================================
-# 💰 /stats
-# ============================================
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = api_get(f"/api/user?id={user.id}")
