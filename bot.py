@@ -1,4 +1,4 @@
-# MYTOKEN Bot v5 - professional withdrawal
+# MYTOKEN v6 - ATF-style profile
 import asyncio, logging, os, json, urllib.request
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -18,7 +18,8 @@ RATE = 0.001
 
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 logger = logging.getLogger('MYTOKEN')
-user_states = {}
+states = {}
+sound_settings = {}
 
 class HH(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -50,17 +51,16 @@ def fnum(v):
     except:
         return '0'
 
-def to_usd(myt):
+def usd(m):
     try:
-        return '{:.2f}'.format(float(myt or 0) * RATE)
+        return '{:.2f}'.format(float(m or 0) * RATE)
     except:
         return '0.00'
 
 def mk_main():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('MYTOKEN افتح', web_app=WebAppInfo(url=WEBAPP_URL))],
-        [InlineKeyboardButton('دعوة صديق', callback_data='invite'), InlineKeyboardButton('رصيدي', callback_data='balance')],
-        [InlineKeyboardButton('ربط المحفظة', callback_data='wallet'), InlineKeyboardButton('سحب', callback_data='withdraw')],
+        [InlineKeyboardButton('حسابي', callback_data='account'), InlineKeyboardButton('دعوة صديق', callback_data='invite')],
         [InlineKeyboardButton('القناة', url=CHANNEL_URL)],
     ])
 
@@ -71,12 +71,17 @@ def mk_join():
     ])
 
 def mk_back():
+    return InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='account')]])
+
+def mk_back_main():
     return InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='back')]])
 
-def mk_admin_wd(uid, amount):
+def mk_account():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('موافقة', callback_data='wd_ok_' + uid + '_' + amount),
-         InlineKeyboardButton('رفض', callback_data='wd_no_' + uid + '_' + amount)],
+        [InlineKeyboardButton('ربط المحفظة', callback_data='acc_wallet'), InlineKeyboardButton('VIP', callback_data='acc_vip')],
+        [InlineKeyboardButton('سحب', callback_data='acc_withdraw'), InlineKeyboardButton('السجل', callback_data='acc_history')],
+        [InlineKeyboardButton('الإحصائيات', callback_data='acc_stats'), InlineKeyboardButton('الأصوات', callback_data='acc_sound')],
+        [InlineKeyboardButton('رجوع', callback_data='back')],
     ])
 
 async def check_sub(ctx, uid):
@@ -87,64 +92,39 @@ async def check_sub(ctx, uid):
         logger.warning(str(e))
         return True
 
-async def show_wallet(q, uid):
-    d = api_post('/api/user', {'id': uid})
-    wal = (d or {}).get('wallet', '')
-    if wal:
-        wt = wal[:10] + '...' + wal[-6:]
-        t = ('💼 محفظتك مربوطة' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
-             '👛 ' + wt + NL + NL +
-             'لتغييرها اضغط تحديث')
-    else:
-        t = ('💼 ربط المحفظة' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
-             'لم تربط محفظتك بعد.' + NL + NL +
-             'اضغط ربط لإدخال عنوان محفظة TON')
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton('ربط/تحديث المحفظة', callback_data='wallet_set')],
-        [InlineKeyboardButton('رجوع', callback_data='back')],
-    ])
-    await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-async def show_withdraw(q, uid):
-    d = api_post('/api/user', {'id': uid})
-    if not d or not d.get('exists'):
-        await q.edit_message_text('اضغط /start أولاً', reply_markup=mk_main())
-        return
-    wal = d.get('wallet', '')
-    bal = float(d.get('balance', 0) or 0)
-    pend = float(d.get('pending', 0) or 0)
-    bal_usd = to_usd(bal)
-    min_usd = to_usd(MIN_WITHDRAW)
-    if bal >= MIN_WITHDRAW:
-        status = '✅ يمكنك السحب'
-        can = True
-    else:
-        need = MIN_WITHDRAW - bal
-        status = '❌ تحتاج ' + fnum(need) + ' MYT للسحب'
-        can = False
-    wt = wal[:10] + '...' + wal[-6:] if wal else 'غير مربوط'
-    t = ('📤 سحب الأرباح' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
-         '💰 رصيدك: ' + fnum(bal) + ' MYT' + NL +
-         '💵 بالدولار: $' + bal_usd + NL +
-         '⏳ معلق: ' + fnum(pend) + ' MYT' + NL + NL +
-         '📊 الحد الأدنى: ' + fnum(MIN_WITHDRAW) + ' MYT ($' + min_usd + ')' + NL +
-         '👛 المحفظة: ' + wt + NL + NL +
-         status)
-    rows = []
-    if can and wal:
-        rows.append([InlineKeyboardButton('إرسال طلب سحب', callback_data='wd_send')])
-    if not wal:
-        rows.append([InlineKeyboardButton('ربط المحفظة', callback_data='wallet')])
-    if can and not wal:
-        pass
-    rows.append([InlineKeyboardButton('رجوع', callback_data='back')])
-    kb = InlineKeyboardMarkup(rows)
-    await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+def render_account(ud, uid, name):
+    bal = float(ud.get('balance', 0) or 0)
+    pend = float(ud.get('pending', 0) or 0)
+    refs = ud.get('refs', 0)
+    wal = ud.get('wallet', '')
+    ck = ud.get('checkinDay', 0)
+    lv = ud.get('level', 1)
+    wal_short = wal[:10] + '...' + wal[-6:] if wal else 'غير مربوط'
+    verified = 'Verified' if wal else 'Unverified'
+    sound = 'On' if sound_settings.get(uid, True) else 'Off'
+    txt = ('👤 حسابي' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
+           '🆔 User ID: ' + str(uid) + NL +
+           '👋 الاسم: ' + name + NL + NL +
+           '✅ Account: ' + verified + NL +
+           '🔊 Sound: ' + sound + NL +
+           '⚡ Level: Lv' + str(lv) + NL + NL +
+           '💎 VIP: غير مفعل' + NL + NL +
+           '💰 Assets: ' + fnum(bal) + ' MYT' + NL +
+           '💵 بالدولار: $' + usd(bal) + NL + NL +
+           '💳 Holding Wallet' + NL +
+           '   ' + wal_short + NL + NL +
+           '🏦 Pool Wallet' + NL +
+           '   ' + fnum(bal) + ' MYT ($$' + usd(bal) + ')' + NL +
+           '   ⏳ معلق: ' + fnum(pend) + ' MYT' + NL + NL +
+           '📊 الحد الأدنى للسحب: ' + str(MIN_WITHDRAW) + ' MYT ($$' + usd(MIN_WITHDRAW) + ')' + NL + NL +
+           '👥 الإحالات: ' + str(refs) + ' | 📅 ' + str(ck) + '/7' + NL + NL +
+           '👇 اختر الإجراء:')
+    return txt
 
 async def cmd_start(update, ctx):
     u = update.effective_user
     fn = u.first_name or 'User'
-    user_states.pop(u.id, None)
+    states.pop(u.id, None)
     if not await check_sub(ctx, u.id):
         t = '🔒 الاشتراك مطلوب' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL + 'اشترك في قناتنا:' + NL + CHANNEL_ID
         await update.message.reply_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_join())
@@ -160,18 +140,13 @@ async def cmd_start(update, ctx):
     res = api_post('/api/register', p)
     if res and res.get('isNew') and res.get('referral') and ref:
         try:
-            nt = '🎉 صديق جديد انضم!' + NL + '💰 +100 MYT' + NL + '👥 إحالاتك +1'
+            nt = '🎉 صديق جديد!' + NL + '💰 +100 MYT' + NL + '👥 إحالاتك +1'
             await ctx.bot.send_message(chat_id=int(ref), text=nt, parse_mode='HTML')
         except Exception as e:
             logger.warning(str(e))
-    d = api_post('/api/user', {'id': u.id})
-    bal = float((d or {}).get('balance', 0) or 0)
-    bal_usd = to_usd(bal)
     t = ('👋 أهلاً ' + fn + '!' + NL + '⛏️ MYTOKEN' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
-         '💰 رصيدك: ' + fnum(bal) + ' MYT ($' + bal_usd + ')' + NL + NL +
          '🎁 دعوة صديق = +100 MYT' + NL +
-         '👛 اربط محفظتك' + NL +
-         '📤 اسحب أرباحك' + NL + NL +
+         '💼 اضغط حسابي لإدارة محفظتك' + NL + NL +
          '👇 ابدأ:')
     await update.message.reply_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_main())
 
@@ -182,118 +157,202 @@ async def cmd_stats(update, ctx):
         await update.message.reply_text('اضغط /start')
         return
     bal = float(d.get('balance', 0) or 0)
-    wal = d.get('wallet', '')
-    wt = wal[:10] + '...' + wal[-6:] if wal else 'غير مربوط'
-    t = ('📊 حسابك' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
-         '💰 ' + fnum(bal) + ' MYT ($' + to_usd(bal) + ')' + NL +
-         '👥 الإحالات: ' + str(d.get('refs', 0)) + NL +
-         '👛 المحفظة: ' + wt)
+    t = ('📊 رصيدك: ' + fnum(bal) + ' MYT ($' + usd(bal) + ')')
     await update.message.reply_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_main())
 
-async def cb_handler(update, ctx):
+async def cb(update, ctx):
     q = update.callback_query
     await q.answer()
     d = q.data
     u = q.from_user
+    uid = u.id
+    name = u.first_name or 'User'
     try:
         if d == 'check_sub':
-            if await check_sub(ctx, u.id):
+            if await check_sub(ctx, uid):
                 await q.edit_message_text('✅ تم التحقق! اضغط /start')
             else:
                 await q.answer('لم تشترك!', show_alert=True)
-        elif d == 'invite':
+            return
+
+        if d == 'account':
+            ud = api_post('/api/user', {'id': uid})
+            if not ud or not ud.get('exists'):
+                await q.edit_message_text('اضغط /start أولاً', reply_markup=mk_back_main())
+                return
+            txt = render_account(ud, uid, name)
+            try:
+                await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=mk_account())
+            except Exception:
+                await q.edit_message_reply_markup(reply_markup=mk_account())
+                await q.message.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=mk_account())
+            return
+
+        if d == 'back':
+            states.pop(uid, None)
+            t = ('👋 أهلاً ' + name + '!' + NL + '⛏️ MYTOKEN' + NL + NL + '👇 اختر:')
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_main())
+            return
+
+        if d == 'invite':
             bi = await ctx.bot.get_me()
-            rl = 'https://t.me/' + bi.username + '?start=ref_' + str(u.id)
-            await q.edit_message_text('🎁 رابطك:' + NL + rl, reply_markup=mk_main())
-        elif d == 'balance':
-            ud = api_post('/api/user', {'id': u.id})
-            b = float((ud or {}).get('balance', 0) or 0)
-            await q.edit_message_text('💰 ' + fnum(b) + ' MYT ($' + to_usd(b) + ')', reply_markup=mk_main())
-        elif d == 'wallet':
-            await show_wallet(q, u.id)
-        elif d == 'wallet_set':
-            user_states[u.id] = 'await_wallet'
-            await q.edit_message_text('📝 أرسل عنوان محفظتك TON:' + NL + NL + 'مثال: UQ...', reply_markup=mk_back())
-        elif d == 'withdraw':
-            await show_withdraw(q, u.id)
-        elif d == 'wd_send':
-            user_states[u.id] = 'await_amount'
-            ud = api_post('/api/user', {'id': u.id})
-            b = float((ud or {}).get('balance', 0) or 0)
-            await q.edit_message_text('📤 أدخل الكمية:' + NL + NL + '💰 رصيدك: ' + fnum(b) + ' MYT' + NL + '📊 الحد الأدنى: ' + str(MIN_WITHDRAW), reply_markup=mk_back())
-        elif d == 'back':
-            user_states.pop(u.id, None)
-            await q.edit_message_text('القائمة:', reply_markup=mk_main())
-        elif d.startswith('wd_ok_'):
+            rl = 'https://t.me/' + bi.username + '?start=ref_' + str(uid)
+            t = '🎁 رابطك:' + NL + NL + '<code>' + rl + '</code>' + NL + NL + '💰 +100 MYT لكل صديق'
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='back')]])
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+            return
+
+        if d == 'acc_wallet':
+            states[uid] = 'await_wallet'
+            t = '💼 ربط محفظة TON' + NL + NL + 'أرسل عنوان محفظتك الآن:' + NL + 'مثال: UQ...'
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_back())
+            return
+
+        if d == 'acc_vip':
+            t = ('💎 VIP' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
+                 'VIP يمنحك:' + NL +
+                 '• مضاعف 2x للتعدين' + NL +
+                 '• مضاعف 2x للإعلانات' + NL +
+                 '• مكافآت يومية أعلى' + NL + NL +
+                 '💵 السعر: 1 TON' + NL + NL +
+                 '⏳ قريباً')
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='account')]])
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return
+
+        if d == 'acc_withdraw':
+            ud = api_post('/api/user', {'id': uid})
+            bal = float((ud or {}).get('balance', 0) or 0)
+            wal = (ud or {}).get('wallet', '')
+            if not wal:
+                t = '❌ اربط محفظتك أولاً!'
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton('ربط المحفظة', callback_data='acc_wallet')], [InlineKeyboardButton('رجوع', callback_data='account')]])
+                await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+                return
+            if bal < MIN_WITHDRAW:
+                need = MIN_WITHDRAW - bal
+                t = '❌ رصيدك غير كافٍ' + NL + NL + '💰 رصيدك: ' + fnum(bal) + ' MYT' + NL + '📊 تحتاج: ' + fnum(need) + ' MYT'
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='account')]])
+                await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+                return
+            states[uid] = 'await_withdraw'
+            t = ('📤 السحب' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
+                 '💰 رصيدك: ' + fnum(bal) + ' MYT ($' + usd(bal) + ')' + NL +
+                 '📊 الحد الأدنى: ' + str(MIN_WITHDRAW) + ' MYT' + NL + NL +
+                 'أرسل الكمية المراد سحبها:')
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=mk_back())
+            return
+
+        if d == 'acc_history':
+            t = '📜 السجل' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL + 'لا توجد سحوبات بعد.'
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='account')]])
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return
+
+        if d == 'acc_stats':
+            ud = api_post('/api/user', {'id': uid})
+            if not ud:
+                return
+            t = ('📊 الإحصائيات' + NL + '━━━━━━━━━━━━━━━━━━' + NL + NL +
+                 '👥 الإحالات: ' + str(ud.get('refs', 0)) + NL +
+                 '📅 التسجيل: ' + str(ud.get('checkinDay', 0)) + '/7' + NL +
+                 '⚡ المستوى: Lv' + str(ud.get('level', 1)) + NL +
+                 '💰 الرصيد: ' + fnum(ud.get('balance', 0)) + ' MYT' + NL +
+                 '⏳ المعلق: ' + fnum(ud.get('pending', 0)) + ' MYT')
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('رجوع', callback_data='account')]])
+            await q.edit_message_text(t, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return
+
+        if d == 'acc_sound':
+            cur = sound_settings.get(uid, True)
+            sound_settings[uid] = not cur
+            status = 'On' if not cur else 'Off'
+            await q.answer('الصوت: ' + status)
+            ud = api_post('/api/user', {'id': uid})
+            txt = render_account(ud or {}, uid, name)
+            await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=mk_account())
+            return
+
+        if d.startswith('wd_ok_'):
             parts = d.replace('wd_ok_', '').split('_')
-            uid = parts[0]
-            amt = parts[1]
-            await q.edit_message_text('✅ تمت الموافقة: ' + amt + ' MYT لـ ' + uid)
+            tu = parts[0]
+            am = parts[1]
+            await q.edit_message_text('✅ موافقة: ' + am + ' MYT لـ ' + tu)
             try:
-                await ctx.bot.send_message(chat_id=int(uid), text='✅ تمت الموافقة على سحب ' + amt + ' MYT' + NL + 'ستُرسل لمحفظتك قريباً', parse_mode='HTML')
+                await ctx.bot.send_message(chat_id=int(tu), text='✅ تمت الموافقة على سحب ' + am + ' MYT' + NL + 'ستُرسل لمحفظتك قريباً', parse_mode='HTML')
             except Exception as e:
                 logger.warning(str(e))
-        elif d.startswith('wd_no_'):
+            return
+
+        if d.startswith('wd_no_'):
             parts = d.replace('wd_no_', '').split('_')
-            uid = parts[0]
-            amt = parts[1]
-            api_post('/api/admin/give', {'admin_id': ADMIN_ID, 'target_id': uid, 'amount': float(amt)})
-            await q.edit_message_text('❌ تم الرفض وإرجاع ' + amt + ' MYT')
+            tu = parts[0]
+            am = parts[1]
+            api_post('/api/admin/give', {'admin_id': ADMIN_ID, 'target_id': tu, 'amount': float(am)})
+            await q.edit_message_text('❌ رفض وإرجاع ' + am + ' MYT')
             try:
-                await ctx.bot.send_message(chat_id=int(uid), text='❌ تم رفض طلب السحب. أُرجع رصيدك.', parse_mode='HTML')
+                await ctx.bot.send_message(chat_id=int(tu), text='❌ تم رفض السحب. أُرجع رصيدك.', parse_mode='HTML')
             except Exception as e:
                 logger.warning(str(e))
+            return
+
     except Exception as e:
         logger.warning(str(e))
 
-async def msg_handler(update, ctx):
+def mk_admin(uid, am):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('موافقة', callback_data='wd_ok_' + uid + '_' + am),
+         InlineKeyboardButton('رفض', callback_data='wd_no_' + uid + '_' + am)],
+    ])
+
+async def msg(update, ctx):
     u = update.effective_user
-    st = user_states.get(u.id)
+    st = states.get(u.id)
     if not st:
         return
     txt = (update.message.text or '').strip()
     if st == 'await_wallet':
-        if len(txt) < 40 or len(txt) > 80:
+        if len(txt) < 40 or len(txt) > 90:
             await update.message.reply_text('❌ عنوان غير صالح', reply_markup=mk_back())
             return
         r = api_post('/api/wallet', {'id': u.id, 'wallet': txt})
-        user_states.pop(u.id, None)
+        states.pop(u.id, None)
         if r and r.get('ok'):
             await update.message.reply_text('✅ تم ربط محفظتك!' + NL + NL + txt[:10] + '...' + txt[-6:], reply_markup=mk_main())
         else:
-            await update.message.reply_text('❌ فشل الربط', reply_markup=mk_main())
-    elif st == 'await_amount':
+            await update.message.reply_text('❌ فشل', reply_markup=mk_main())
+    elif st == 'await_withdraw':
         try:
-            amt = float(txt)
+            am = float(txt)
         except:
             await update.message.reply_text('❌ رقم غير صالح', reply_markup=mk_back())
             return
         ud = api_post('/api/user', {'id': u.id})
         bal = float((ud or {}).get('balance', 0) or 0)
-        if amt < MIN_WITHDRAW:
-            await update.message.reply_text('❌ الحد الأدنى ' + str(MIN_WITHDRAW) + ' MYT', reply_markup=mk_back())
+        if am < MIN_WITHDRAW:
+            await update.message.reply_text('❌ الحد الأدنى ' + str(MIN_WITHDRAW), reply_markup=mk_back())
             return
-        if amt > bal:
-            await update.message.reply_text('❌ رصيدك ' + fnum(bal) + ' MYT فقط', reply_markup=mk_back())
+        if am > bal:
+            await update.message.reply_text('❌ رصيدك ' + fnum(bal) + ' فقط', reply_markup=mk_back())
             return
-        r = api_post('/api/admin/give', {'admin_id': ADMIN_ID, 'target_id': str(u.id), 'amount': -amt})
-        user_states.pop(u.id, None)
+        r = api_post('/api/admin/give', {'admin_id': ADMIN_ID, 'target_id': str(u.id), 'amount': -am})
+        states.pop(u.id, None)
         if r and r.get('ok'):
-            await update.message.reply_text('✅ تم إنشاء طلب سحب ' + fnum(amt) + ' MYT ($' + to_usd(amt) + ')' + NL + '⏳ قيد المراجعة', reply_markup=mk_main())
+            await update.message.reply_text('✅ طلب سحب ' + fnum(am) + ' MYT ($' + usd(am) + ')' + NL + '⏳ قيد المراجعة', reply_markup=mk_main())
             wal = (ud or {}).get('wallet', '')
-            atxt = ('🔔 طلب سحب جديد' + NL + '━━━━━━━━━━━━━━━━━━' + NL +
-                    '👤 ' + (u.first_name or 'User') + NL +
-                    '🆔 ' + str(u.id) + NL +
-                    '💰 ' + fnum(amt) + ' MYT ($' + to_usd(amt) + ')' + NL +
-                    '👛 ' + wal[:10] + '...' + wal[-6:])
+            at = ('🔔 طلب سحب جديد' + NL + '━━━━━━━━━━━━━━━━━━' + NL +
+                  '👤 ' + (u.first_name or 'User') + NL +
+                  '🆔 ' + str(u.id) + NL +
+                  '💰 ' + fnum(am) + ' MYT ($' + usd(am) + ')' + NL +
+                  '👛 ' + wal[:10] + '...' + wal[-6:])
             try:
-                await ctx.bot.send_message(chat_id=int(ADMIN_ID), text=atxt, parse_mode='HTML', reply_markup=mk_admin_wd(str(u.id), fnum(amt)))
+                await ctx.bot.send_message(chat_id=int(ADMIN_ID), text=at, parse_mode='HTML', reply_markup=mk_admin(str(u.id), fnum(am)))
             except Exception as e:
                 logger.warning(str(e))
         else:
             await update.message.reply_text('❌ فشل', reply_markup=mk_main())
 
-async def err_h(update, ctx): logger.error(str(ctx.error))
+async def err(update, ctx): logger.error(str(ctx.error))
 
 async def main():
     Thread(target=run_health, daemon=True).start()
@@ -304,12 +363,12 @@ async def main():
     app.add_handler(CommandHandler('start', cmd_start))
     app.add_handler(CommandHandler('stats', cmd_stats))
     app.add_handler(CommandHandler('balance', cmd_stats))
-    app.add_handler(CallbackQueryHandler(cb_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_handler))
-    app.add_error_handler(err_h)
+    app.add_handler(CallbackQueryHandler(cb))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
+    app.add_error_handler(err)
     await app.initialize()
     try:
-        await app.bot.set_my_commands([BotCommand('start', 'البداية'), BotCommand('stats', 'حسابك'), BotCommand('balance', 'رصيدك')])
+        await app.bot.set_my_commands([BotCommand('start', 'البداية'), BotCommand('stats', 'رصيدك')])
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='MYTOKEN افتح', web_app=WebAppInfo(url=WEBAPP_URL)))
     except Exception as e:
         logger.warning(str(e))
