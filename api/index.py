@@ -152,7 +152,20 @@ def h_withdraw_request():
     if not wallet: return err("اربط محفظتك أولاً", 400)
     if amount < MIN_WITHDRAW: return err("الحد الأدنى " + str(MIN_WITHDRAW) + " MYT", 400)
     if amount > bal: return err("رصيد غير كافٍ (المتاح: " + str(round(bal, 2)) + " MYT)", 400)
-    redis_pipe([("HINCRBYFLOAT", ukey(uid), "balance", -amount), ("HINCRBYFLOAT", ukey(uid), "pending", amount)])
+    import time as _t
+    req_id = uid + "_" + str(int(_t.time()))
+    redis_pipe([
+        ("HINCRBYFLOAT", ukey(uid), "balance", -amount),
+        ("HINCRBYFLOAT", ukey(uid), "pending", amount),
+        ("HSET", "withdrawal:" + req_id, "req_id", req_id),
+        ("HSET", "withdrawal:" + req_id, "user_id", uid),
+        ("HSET", "withdrawal:" + req_id, "first_name", fn),
+        ("HSET", "withdrawal:" + req_id, "amount", str(round(amount, 2))),
+        ("HSET", "withdrawal:" + req_id, "wallet", wallet),
+        ("HSET", "withdrawal:" + req_id, "status", "pending"),
+        ("HSET", "withdrawal:" + req_id, "created_at", str(int(_t.time()))),
+        ("SADD", "withdrawals", req_id)
+    ])
     txt = "🔔 <b>طلب سحب جديد</b>\n━━━━━━━━━━━━━━━━━━\n👤 " + fn + "\n🆔 <code>" + uid + "</code>\n💰 <b>" + str(round(amount, 2)) + " MYT</b>\n👛 <code>" + wallet[:10] + "..." + wallet[-6:] + "</code>"
     kb = {"inline_keyboard": [[{"text": "✅ موافقة", "callback_data": "wd_ok_" + uid + "_" + str(amount)}, {"text": "❌ رفض", "callback_data": "wd_no_" + uid + "_" + str(amount)}]]}
     send_tg(int(ADMIN_ID), txt, kb)
@@ -216,6 +229,60 @@ def h_set():
     if nb < 0: nb = 0
     update_user(uid, balance=nb)
     return ok(new_balance=nb)
+
+
+
+@app.route("/api/admin/withdrawals", methods=["POST"])
+def h_admin_withdrawals():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    ids = redis_cmd("SMEMBERS", "withdrawals") or []
+    out = []
+    for rid in ids:
+        w = redis_cmd("HGETALL", "withdrawal:" + rid)
+        if not w: continue
+        d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+        out.append(d)
+    out.sort(key=lambda x: int(x.get("created_at", 0)), reverse=True)
+    return ok(withdrawals=out, total=len(out))
+
+
+@app.route("/api/admin/withdrawal/approve", methods=["POST"])
+def h_wd_approve():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid: return err("Missing req_id")
+    w = redis_cmd("HGETALL", "withdrawal:" + rid)
+    if not w: return err("Request not found", 404)
+    d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+    uid = d.get("user_id", "")
+    amt = float(d.get("amount", 0))
+    redis_pipe([
+        ("HSET", "withdrawal:" + rid, "status", "approved"),
+        ("HINCRBYFLOAT", ukey(uid), "pending", -amt)
+    ])
+    send_tg(int(uid), "✅ <b>تمت الموافقة على سحبك</b>\n💰 " + str(round(amt, 2)) + " MYT")
+    return ok(message="Approved")
+
+@app.route("/api/admin/withdrawal/reject", methods=["POST"])
+def h_wd_reject():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid: return err("Missing req_id")
+    w = redis_cmd("HGETALL", "withdrawal:" + rid)
+    if not w: return err("Request not found", 404)
+    d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+    uid = d.get("user_id", "")
+    amt = float(d.get("amount", 0))
+    redis_pipe([
+        ("HSET", "withdrawal:" + rid, "status", "rejected"),
+        ("HINCRBYFLOAT", ukey(uid), "pending", -amt),
+        ("HINCRBYFLOAT", ukey(uid), "balance", amt)
+    ])
+    send_tg(int(uid), "❌ <b>تم رفض طلب السحب</b>\nتم إرجاع رصيدك.")
+    return ok(message="Rejected")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
