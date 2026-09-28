@@ -284,5 +284,58 @@ def h_wd_reject():
     send_tg(int(uid), "❌ <b>تم رفض طلب السحب</b>\nتم إرجاع رصيدك.")
     return ok(message="Rejected")
 
+
+
+@app.route("/api/admin/withdrawals", methods=["POST"])
+def h_admin_wd():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    ids = redis_cmd("SMEMBERS", "withdrawals") or []
+    out = []
+    for rid in ids:
+        w = redis_cmd("HGETALL", "withdrawal:" + rid)
+        if not w: continue
+        d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+        out.append(d)
+    out.sort(key=lambda x: int(x.get("created_at", 0)), reverse=True)
+    return ok(withdrawals=out, total=len(out))
+
+@app.route("/api/admin/withdrawal/approve", methods=["POST"])
+def h_wd_ok():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid: return err("Missing req_id")
+    w = redis_cmd("HGETALL", "withdrawal:" + rid)
+    if not w: return err("Not found", 404)
+    d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+    u = d.get("user_id", "")
+    a = float(d.get("amount", 0))
+    redis_pipe([
+        ("HSET", "withdrawal:" + rid, "status", "approved"),
+        ("HINCRBYFLOAT", ukey(u), "pending", -a)
+    ])
+    send_tg(int(u), "✅ تمت الموافقة على سحبك\n💰 " + str(round(a, 2)) + " MYT")
+    return ok(message="Approved")
+
+@app.route("/api/admin/withdrawal/reject", methods=["POST"])
+def h_wd_no():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid: return err("Missing req_id")
+    w = redis_cmd("HGETALL", "withdrawal:" + rid)
+    if not w: return err("Not found", 404)
+    d = {w[i]: w[i+1] for i in range(0, len(w), 2)} if isinstance(w, list) else w
+    u = d.get("user_id", "")
+    a = float(d.get("amount", 0))
+    redis_pipe([
+        ("HSET", "withdrawal:" + rid, "status", "rejected"),
+        ("HINCRBYFLOAT", ukey(u), "pending", -a),
+        ("HINCRBYFLOAT", ukey(u), "balance", a)
+    ])
+    send_tg(int(u), "❌ تم رفض طلب السحب. تم إرجاع رصيدك.")
+    return ok(message="Rejected")
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
