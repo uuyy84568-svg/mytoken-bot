@@ -337,5 +337,27 @@ def h_wd_no():
     send_tg(int(u), "❌ تم رفض طلب السحب. تم إرجاع رصيدك.")
     return ok(message="Rejected")
 
+
+
+@app.route("/api/admin/fix_negatives", methods=["POST"])
+def h_fix_negatives():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    keys = redis_cmd("KEYS", "user:*") or []
+    fixed_count = 0
+    total_fixed_amount = 0.0
+    for k in keys:
+        u = redis_cmd("HGETALL", k)
+        if not u: continue
+        d = {u[i]: u[i+1] for i in range(0, len(u), 2)} if isinstance(u, list) else u
+        bal = n(d.get("balance"))
+        if bal < 0:
+            uid = k.replace("user:", "")
+            redis_pipe([("HSET", k, "balance", "0")])
+            fixed_count += 1
+            total_fixed_amount += abs(bal)
+            print("[FIXED] " + uid + ": " + str(round(bal, 2)) + " -> 0")
+    return ok(fixed_users=fixed_count, total_fixed=round(total_fixed_amount, 2), total_scanned=len(keys))
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
