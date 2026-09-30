@@ -509,5 +509,59 @@ def h_vip_requests():
     return ok(requests=out, total=len(out))
 
 
+
+
+# =====================================================================
+#  DIAGNOSTIC ENDPOINT
+# =====================================================================
+
+@app.route("/api/debug", methods=["GET", "POST"])
+def h_debug():
+    url_ok = bool(UPSTASH_URL)
+    tok_ok = bool(UPSTASH_TOK)
+    url_start = UPSTASH_URL[:35] + "..." if url_ok else "MISSING"
+    tok_start = UPSTASH_TOK[:12] + "..." if tok_ok else "MISSING"
+    tok_len = len(UPSTASH_TOK)
+    bot_ok = bool(BOT_TOKEN)
+    admin_val = ADMIN_ID
+    
+    # اختبار ping
+    ping_result = "N/A"
+    try:
+        p = redis_cmd("PING")
+        ping_result = str(p)
+    except Exception as e:
+        ping_result = "ERR: " + str(e)
+    
+    # اختبار كتابة
+    write_result = "N/A"
+    try:
+        redis_cmd("SET", "debug_test", "hello")
+        read_back = redis_cmd("GET", "debug_test")
+        write_result = "OK: " + str(read_back)
+    except Exception as e:
+        write_result = "ERR: " + str(e)
+    
+    # عدد المستخدمين
+    users_count = 0
+    try:
+        keys = redis_cmd("KEYS", "user:*") or []
+        users_count = len(keys)
+    except Exception:
+        pass
+    
+    return ok(
+        upstash_url=url_start,
+        upstash_url_present=url_ok,
+        upstash_token=tok_start,
+        upstash_token_present=tok_ok,
+        upstash_token_length=tok_len,
+        bot_token_present=bot_ok,
+        admin_id=admin_val,
+        ping=ping_result,
+        write_test=write_result,
+        users_count=users_count
+    )
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
