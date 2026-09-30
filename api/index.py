@@ -574,5 +574,124 @@ def h_debug():
         users_count=users_count
     )
 
+
+
+# =====================================================================
+#  VIP SYSTEM (Same pattern as users)
+# =====================================================================
+
+import time as _vtime
+
+VIP_PLANS = {
+    "bronze":  {"name": "Bronze",  "price": 0.5, "days": 7,    "multiplier": 2,  "energy": 1.5,  "icon": "B"},
+    "silver":  {"name": "Silver",  "price": 1.0, "days": 30,   "multiplier": 3,  "energy": 2.0,  "icon": "S"},
+    "gold":    {"name": "Gold",    "price": 2.0, "days": 90,   "multiplier": 5,  "energy": 3.0,  "icon": "G"},
+    "diamond": {"name": "Diamond", "price": 5.0, "days": 3650, "multiplier": 10, "energy": 10.0, "icon": "D"},
+}
+
+
+@app.route("/api/vip/plans", methods=["GET"])
+def h_vip_plans():
+    return ok(plans=VIP_PLANS)
+
+
+@app.route("/api/vip/purchase", methods=["POST"])
+def h_vip_purchase():
+    body = request.get_json(silent=True) or {}
+    uid = body.get("id")
+    plan = body.get("plan")
+    if not uid or not plan:
+        return err("Missing fields")
+    if plan not in VIP_PLANS:
+        return err("Invalid plan")
+    uid = str(int(uid))
+    u = get_user(uid)
+    if not u:
+        return err("User not found", 404)
+    rid = "vip_" + uid + "_" + str(int(_vtime.time()))
+    p = VIP_PLANS[plan]
+    save_user("vipreq_" + rid, {
+        "req_id": rid,
+        "user_id": uid,
+        "first_name": u.get("first_name", "User"),
+        "plan": plan,
+        "plan_name": p["name"],
+        "price": str(p["price"]),
+        "status": "pending",
+        "created_at": str(int(_vtime.time()))
+    })
+    txt = ("VIP REQUEST\n"
+           "Name: " + u.get("first_name", "User") + "\n"
+           "ID: " + uid + "\n"
+           "Plan: " + p["name"] + "\n"
+           "Price: " + str(p["price"]) + " TON")
+    kb = {"inline_keyboard": [[
+        {"text": "ACTIVATE", "callback_data": "vip_ok_" + rid},
+        {"text": "REJECT", "callback_data": "vip_no_" + rid}
+    ]]}
+    send_tg(int(ADMIN_ID), txt, kb)
+    return ok(req_id=rid, message="Request sent")
+
+
+@app.route("/api/admin/vip/requests", methods=["POST"])
+def h_vip_requests():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    keys = redis_cmd("KEYS", "user:vipreq_*") or []
+    out = []
+    for k in keys:
+        u = get_user(k.replace("user:", ""))
+        if u:
+            out.append(u)
+    out.sort(key=lambda x: int(x.get("created_at", 0)), reverse=True)
+    return ok(requests=out, total=len(out))
+
+
+@app.route("/api/admin/vip/activate", methods=["POST"])
+def h_vip_activate():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid:
+        return err("Missing req_id")
+    r = get_user("vipreq_" + rid) if rid.startswith("vip_") else None
+    if not r:
+        r = get_user("vipreq_" + rid.replace("vip_", "vipreq_", 1))
+    # fallback: try direct
+    if not r:
+        r = get_user(rid)
+    if not r:
+        return err("Not found", 404)
+    uid = r.get("user_id", "")
+    plan = r.get("plan", "")
+    if plan not in VIP_PLANS:
+        return err("Invalid plan")
+    p = VIP_PLANS[plan]
+    expires = int(_vtime.time()) + p["days"] * 86400
+    update_user(uid, vip_level=plan, vip_expires=expires)
+    update_user("vipreq_" + rid, status="approved")
+    exp_str = _vtime.strftime("%Y-%m-%d", _vtime.gmtime(expires))
+    send_tg(int(uid), "VIP ACTIVATED: " + p["name"] + "\nMultiplier: x" + str(p["multiplier"]) + "\nValid until: " + exp_str)
+    return ok(message="Activated")
+
+
+@app.route("/api/admin/vip/reject", methods=["POST"])
+def h_vip_reject():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid:
+        return err("Missing req_id")
+    r = get_user("vipreq_" + rid)
+    if not r:
+        return err("Not found", 404)
+    uid = r.get("user_id", "")
+    update_user("vipreq_" + rid, status="rejected")
+    send_tg(int(uid), "VIP request rejected.")
+    return ok(message="Rejected")
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
