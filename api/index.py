@@ -71,13 +71,14 @@ def get_user(uid):
     return None
 
 def save_user(uid, fields):
-    cmds = [("HSET", ukey(uid), k, str(v)) for k, v in fields.items()]
-    cmds.append(("SADD", "users", str(uid)))
-    rpipe(cmds)
+    for k, v in fields.items():
+        rcmd("HSET", ukey(uid), k, str(v))
+    rcmd("SADD", "users", str(uid))
 
 def upd_user(uid, **fields):
     if not fields: return
-    rpipe([("HSET", ukey(uid), k, str(v)) for k, v in fields.items()])
+    for k, v in fields.items():
+        rcmd("HSET", ukey(uid), k, str(v))
 
 def n(v, d=0):
     try: return float(v if v is not None else d)
