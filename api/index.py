@@ -428,7 +428,7 @@ def h_vip_purchase():
         "status": "pending",
         "created_at": str(int(_time.time()))
     })
-    redis_cmd("SET", "vipreq:" + rid, req_data)
+    redis_pipe([("SET", "vipreq:" + rid, req_data)])
     txt = ("VIP REQUEST\n"
            "----------------\n"
            "Name: " + u.get("first_name", "User") + "\n"
@@ -452,7 +452,8 @@ def h_vip_activate():
     if not rid:
         return err("Missing req_id")
     import json as _json
-    raw = redis_cmd("GET", "vipreq:" + rid)
+    r = redis_pipe([("GET", "vipreq:" + rid)])
+    raw = r[0] if r else None
     if not raw:
         return err("Not found", 404)
     d = _json.loads(raw) if isinstance(raw, str) else raw
@@ -485,7 +486,8 @@ def h_vip_reject():
     if not rid:
         return err("Missing req_id")
     import json as _json
-    raw = redis_cmd("GET", "vipreq:" + rid)
+    r = redis_pipe([("GET", "vipreq:" + rid)])
+    raw = r[0] if r else None
     if not raw:
         return err("Not found", 404)
     d = _json.loads(raw) if isinstance(raw, str) else raw
@@ -501,10 +503,12 @@ def h_vip_requests():
     if not is_admin(body):
         return err("Unauthorized", 403)
     import json as _json
-    keys = redis_cmd("KEYS", "vipreq:*") or []
+    key_res = redis_pipe([("KEYS", "vipreq:*")])
+    keys = key_res[0] if key_res and key_res[0] else []
     out = []
     for k in keys:
-        raw = redis_cmd("GET", k)
+        r = redis_pipe([("GET", k)])
+        raw = r[0] if r else None
         if not raw:
             continue
         try:
