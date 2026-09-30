@@ -497,10 +497,10 @@ def h_vip_requests():
     body = request.get_json(silent=True) or {}
     if not is_admin(body):
         return err("Unauthorized", 403)
-    ids = redis_cmd("SMEMBERS", "vip_requests") or []
+    keys = redis_cmd("KEYS", "vipreq:*") or []
     out = []
-    for rid in ids:
-        r = redis_cmd("HGETALL", "vipreq:" + rid)
+    for k in keys:
+        r = redis_cmd("HGETALL", k)
         if not r:
             continue
         d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
