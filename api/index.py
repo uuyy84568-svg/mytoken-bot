@@ -417,17 +417,18 @@ def h_vip_purchase():
         return err("User not found", 404)
     rid = "vip_" + uid + "_" + str(int(_time.time()))
     p = VIP_PLANS[plan]
-    redis_pipe([
-        ("HSET", "vipreq:" + rid, "req_id", rid),
-        ("HSET", "vipreq:" + rid, "user_id", uid),
-        ("HSET", "vipreq:" + rid, "first_name", u.get("first_name", "User")),
-        ("HSET", "vipreq:" + rid, "plan", plan),
-        ("HSET", "vipreq:" + rid, "plan_name", p["name"]),
-        ("HSET", "vipreq:" + rid, "price", str(p["price"])),
-        ("HSET", "vipreq:" + rid, "status", "pending"),
-        ("HSET", "vipreq:" + rid, "created_at", str(int(_time.time()))),
-        ("SADD", "vip_requests", rid)
-    ])
+    import json as _json
+    req_data = _json.dumps({
+        "req_id": rid,
+        "user_id": uid,
+        "first_name": u.get("first_name", "User"),
+        "plan": plan,
+        "plan_name": p["name"],
+        "price": str(p["price"]),
+        "status": "pending",
+        "created_at": str(int(_time.time()))
+    })
+    redis_cmd("SET", "vipreq:" + rid, req_data)
     txt = ("VIP REQUEST\n"
            "----------------\n"
            "Name: " + u.get("first_name", "User") + "\n"
@@ -450,10 +451,11 @@ def h_vip_activate():
     rid = body.get("req_id")
     if not rid:
         return err("Missing req_id")
-    r = redis_cmd("HGETALL", "vipreq:" + rid)
-    if not r:
+    import json as _json
+    raw = redis_cmd("GET", "vipreq:" + rid)
+    if not raw:
         return err("Not found", 404)
-    d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
+    d = _json.loads(raw) if isinstance(raw, str) else raw
     uid = d.get("user_id", "")
     plan = d.get("plan", "")
     if plan not in VIP_PLANS:
@@ -482,10 +484,11 @@ def h_vip_reject():
     rid = body.get("req_id")
     if not rid:
         return err("Missing req_id")
-    r = redis_cmd("HGETALL", "vipreq:" + rid)
-    if not r:
+    import json as _json
+    raw = redis_cmd("GET", "vipreq:" + rid)
+    if not raw:
         return err("Not found", 404)
-    d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
+    d = _json.loads(raw) if isinstance(raw, str) else raw
     uid = d.get("user_id", "")
     redis_pipe([("HSET", "vipreq:" + rid, "status", "rejected")])
     send_tg(int(uid), "VIP request rejected.")
@@ -497,14 +500,18 @@ def h_vip_requests():
     body = request.get_json(silent=True) or {}
     if not is_admin(body):
         return err("Unauthorized", 403)
+    import json as _json
     keys = redis_cmd("KEYS", "vipreq:*") or []
     out = []
     for k in keys:
-        r = redis_cmd("HGETALL", k)
-        if not r:
+        raw = redis_cmd("GET", k)
+        if not raw:
             continue
-        d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
-        out.append(d)
+        try:
+            d = _json.loads(raw) if isinstance(raw, str) else raw
+            out.append(d)
+        except Exception:
+            pass
     out.sort(key=lambda x: int(x.get("created_at", 0)), reverse=True)
     return ok(requests=out, total=len(out))
 
