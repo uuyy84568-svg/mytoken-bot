@@ -359,5 +359,155 @@ def h_fix_negatives():
             print("[FIXED] " + uid + ": " + str(round(bal, 2)) + " -> 0")
     return ok(fixed_users=fixed_count, total_fixed=round(total_fixed_amount, 2), total_scanned=len(keys))
 
+
+
+# =====================================================================
+#  VIP SYSTEM
+# =====================================================================
+
+import time as _time
+
+VIP_PLANS = {
+    "bronze":  {"name": "Bronze",  "price": 0.5, "days": 7,    "multiplier": 2,  "energy_bonus": 1.5,  "fast_withdraw": False, "icon": "B"},
+    "silver":  {"name": "Silver",  "price": 1.0, "days": 30,   "multiplier": 3,  "energy_bonus": 2.0,  "fast_withdraw": True,  "icon": "S"},
+    "gold":    {"name": "Gold",    "price": 2.0, "days": 90,   "multiplier": 5,  "energy_bonus": 3.0,  "fast_withdraw": True,  "icon": "G"},
+    "diamond": {"name": "Diamond", "price": 5.0, "days": 3650, "multiplier": 10, "energy_bonus": 10.0, "fast_withdraw": True,  "icon": "D"},
+}
+
+
+@app.route("/api/vip/plans", methods=["GET"])
+def h_vip_plans():
+    return ok(plans=VIP_PLANS)
+
+
+@app.route("/api/vip/my", methods=["POST"])
+def h_vip_my():
+    body = request.get_json(silent=True) or {}
+    uid = body.get("id")
+    if not uid:
+        return err("Missing id")
+    u = get_user(str(int(uid)))
+    if not u:
+        return ok(exists=False)
+    lvl = u.get("vip_level", "")
+    exp = int(n(u.get("vip_expires", 0)))
+    now = int(_time.time())
+    active = bool(lvl) and exp > now
+    return ok(
+        exists=True,
+        vip_level=lvl if active else "",
+        vip_expires=exp if active else 0,
+        active=active,
+        multiplier=VIP_PLANS.get(lvl, {}).get("multiplier", 1) if active else 1
+    )
+
+
+@app.route("/api/vip/purchase", methods=["POST"])
+def h_vip_purchase():
+    body = request.get_json(silent=True) or {}
+    uid = body.get("id")
+    plan = body.get("plan")
+    if not uid or not plan:
+        return err("Missing fields")
+    if plan not in VIP_PLANS:
+        return err("Invalid plan")
+    uid = str(int(uid))
+    u = get_user(uid)
+    if not u:
+        return err("User not found", 404)
+    rid = "vip_" + uid + "_" + str(int(_time.time()))
+    p = VIP_PLANS[plan]
+    redis_pipe([
+        ("HSET", "vipreq:" + rid, "req_id", rid),
+        ("HSET", "vipreq:" + rid, "user_id", uid),
+        ("HSET", "vipreq:" + rid, "first_name", u.get("first_name", "User")),
+        ("HSET", "vipreq:" + rid, "plan", plan),
+        ("HSET", "vipreq:" + rid, "plan_name", p["name"]),
+        ("HSET", "vipreq:" + rid, "price", str(p["price"])),
+        ("HSET", "vipreq:" + rid, "status", "pending"),
+        ("HSET", "vipreq:" + rid, "created_at", str(int(_time.time()))),
+        ("SADD", "vip_requests", rid)
+    ])
+    txt = ("VIP REQUEST\n"
+           "----------------\n"
+           "Name: " + u.get("first_name", "User") + "\n"
+           "ID: " + uid + "\n"
+           "Plan: " + p["name"] + "\n"
+           "Price: " + str(p["price"]) + " TON")
+    kb = {"inline_keyboard": [[
+        {"text": "ACTIVATE", "callback_data": "vip_ok_" + rid},
+        {"text": "REJECT", "callback_data": "vip_no_" + rid}
+    ]]}
+    send_tg(int(ADMIN_ID), txt, kb)
+    return ok(req_id=rid, message="Request sent")
+
+
+@app.route("/api/admin/vip/activate", methods=["POST"])
+def h_vip_activate():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid:
+        return err("Missing req_id")
+    r = redis_cmd("HGETALL", "vipreq:" + rid)
+    if not r:
+        return err("Not found", 404)
+    d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
+    uid = d.get("user_id", "")
+    plan = d.get("plan", "")
+    if plan not in VIP_PLANS:
+        return err("Invalid plan")
+    p = VIP_PLANS[plan]
+    now = int(_time.time())
+    expires = now + p["days"] * 86400
+    redis_pipe([
+        ("HSET", "user:" + uid, "vip_level", plan),
+        ("HSET", "user:" + uid, "vip_expires", str(expires)),
+        ("HSET", "vipreq:" + rid, "status", "approved")
+    ])
+    expires_str = _time.strftime("%Y-%m-%d", _time.gmtime(expires))
+    send_tg(int(uid),
+        "VIP ACTIVATED: " + p["name"] + "\n"
+        "Multiplier: x" + str(p["multiplier"]) + "\n"
+        "Valid until: " + expires_str)
+    return ok(message="Activated")
+
+
+@app.route("/api/admin/vip/reject", methods=["POST"])
+def h_vip_reject():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    rid = body.get("req_id")
+    if not rid:
+        return err("Missing req_id")
+    r = redis_cmd("HGETALL", "vipreq:" + rid)
+    if not r:
+        return err("Not found", 404)
+    d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
+    uid = d.get("user_id", "")
+    redis_pipe([("HSET", "vipreq:" + rid, "status", "rejected")])
+    send_tg(int(uid), "VIP request rejected.")
+    return ok(message="Rejected")
+
+
+@app.route("/api/admin/vip/requests", methods=["POST"])
+def h_vip_requests():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body):
+        return err("Unauthorized", 403)
+    ids = redis_cmd("SMEMBERS", "vip_requests") or []
+    out = []
+    for rid in ids:
+        r = redis_cmd("HGETALL", "vipreq:" + rid)
+        if not r:
+            continue
+        d = {r[i]: r[i+1] for i in range(0, len(r), 2)} if isinstance(r, list) else r
+        out.append(d)
+    out.sort(key=lambda x: int(x.get("created_at", 0)), reverse=True)
+    return ok(requests=out, total=len(out))
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
