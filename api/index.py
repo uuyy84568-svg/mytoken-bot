@@ -231,3 +231,42 @@ def h_give():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+@app.route("/api/admin/withdrawal/approve", methods=["POST"])
+def h_wd_approve():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    req_id = body.get("req_id")
+    if not req_id: return err("Missing req_id")
+    req = wd_col.find_one({"req_id": req_id})
+    if not req: return err("Request not found", 404)
+    if req["status"] != "pending": return err("Request already processed")
+    
+    amt = float(req["requested"])
+    uid = req["user_id"]
+    u = get_user(uid)
+    new_pending = max(0, n(u.get("pending")) - amt)
+    upd_user(uid, pending=new_pending)
+    wd_col.update_one({"req_id": req_id}, {"$set": {"status": "approved"}})
+    send_tg(int(uid), f"✅ تمت الموافقة على سحبك\n💰 {amt} MYT")
+    return ok(message="Approved")
+
+@app.route("/api/admin/withdrawal/reject", methods=["POST"])
+def h_wd_reject():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    req_id = body.get("req_id")
+    if not req_id: return err("Missing req_id")
+    req = wd_col.find_one({"req_id": req_id})
+    if not req: return err("Request not found", 404)
+    if req["status"] != "pending": return err("Request already processed")
+    
+    amt = float(req["requested"])
+    uid = req["user_id"]
+    u = get_user(uid)
+    new_pending = max(0, n(u.get("pending")) - amt)
+    new_bal = n(u.get("balance")) + amt
+    upd_user(uid, pending=new_pending, balance=new_bal)
+    wd_col.update_one({"req_id": req_id}, {"$set": {"status": "rejected"}})
+    send_tg(int(uid), f"❌ تم رفض طلب السحب\nتم إرجاع {amt} MYT لرصيدك.")
+    return ok(message="Rejected")
