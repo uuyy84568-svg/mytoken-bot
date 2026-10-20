@@ -80,7 +80,7 @@ def health():
     try:
         users_col.find_one({})
         return ok(redis=True, db="mongodb")
-    except: return ok(redis=False)
+    except Exception as e: return ok(redis=False, error=str(e))
 
 @app.route("/api/register", methods=["POST"])
 def h_register():
