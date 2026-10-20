@@ -73,7 +73,7 @@ def send_tg(chat_id, text):
     except: pass
 
 @app.route("/", methods=["GET"])
-def home(): return ok(name="MYTOKEN API", version="8.1 Fees", status="online")
+def home(): return ok(name="MYTOKEN API", version="8.2 Full", status="online")
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -139,12 +139,10 @@ def h_wd_req():
     u = get_user(uid)
     if not u: return err("User not found", 404)
     bal = n(u.get("balance")); wal = u.get("wallet", "")
-    
     if not wal: return err("اربط محفظتك أولاً", 400)
     if amt < MIN_WITHDRAW: return err("الحد الأدنى 1,000 MYT", 400)
     if amt > bal: return err("رصيد غير كافٍ", 400)
     
-    # --- FEE CALCULATION ---
     platform_fee = round(amt * 0.02, 2)
     network_fee = 50.0
     net_amount = amt - platform_fee - network_fee
@@ -157,17 +155,47 @@ def h_wd_req():
         "network_fee": str(network_fee), "net_amount": str(round(net_amount, 2)), 
         "wallet": wal, "status": "pending", "created_at": int(_t.time())
     })
-    
     upd_user(uid, balance=bal - amt, pending=n(u.get("pending")) + amt)
-    
-    msg = (f"طلب سحب جديد\nالاسم: {u.get('first_name')}\nID: {uid}\n" +
-           f"المطلوب: {amt} MYT\n" +
-           f"عمولة المنصة (2%): {platform_fee} MYT\n" +
-           f"رسوم الشبكة: {network_fee} MYT\n" +
-           f"الصافي للمستخدم: {round(net_amount, 2)} MYT")
-           
+    msg = (f"طلب سحب جديد\nالاسم: {u.get('first_name')}\nID: {uid}\n" + f"المطلوب: {amt} MYT\n" + f"عمولة المنصة: {platform_fee} MYT\n" + f"رسوم الشبكة: {network_fee} MYT\n" + f"الصافي: {round(net_amount, 2)} MYT")
     send_tg(int(ADMIN_ID), msg)
     return ok(message="Request sent", amount=amt, net_amount=round(net_amount, 2))
+
+@app.route("/api/admin/withdrawals", methods=["POST"])
+def h_wd_list():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    out = list(wd_col.find({}, {"_id": 0}).sort("created_at", -1))
+    return ok(withdrawals=out, total=len(out))
+
+@app.route("/api/vip/plans", methods=["GET"])
+def h_vip_plans(): return ok(plans=VIP_PLANS)
+
+@app.route("/api/vip/purchase", methods=["POST"])
+def h_vip_req():
+    body = request.get_json(silent=True) or {}
+    uid = body.get("id"); plan = body.get("plan")
+    if not uid or not plan: return err("Missing fields")
+    if plan not in VIP_PLANS: return err("Invalid plan")
+    uid = str(int(uid))
+    u = get_user(uid)
+    if not u: return err("User not found", 404)
+    rid = "vip_" + uid + "_" + str(int(_t.time()))
+    p = VIP_PLANS[plan]
+    vip_col.insert_one({
+        "req_id": rid, "user_id": uid, "first_name": u.get("first_name"), 
+        "plan": plan, "plan_name": p["name"], "price": str(p["price"]), 
+        "status": "pending", "created_at": int(_t.time())
+    })
+    msg = (f"طلب VIP جديد\nالاسم: {u.get('first_name')}\nID: {uid}\nالمستوى: {p['name']}\nالسعر: {p['price']} TON")
+    send_tg(int(ADMIN_ID), msg)
+    return ok(req_id=rid, message="Request sent")
+
+@app.route("/api/admin/vip/requests", methods=["POST"])
+def h_vip_list():
+    body = request.get_json(silent=True) or {}
+    if not is_admin(body): return err("Unauthorized", 403)
+    out = list(vip_col.find({}, {"_id": 0}).sort("created_at", -1))
+    return ok(requests=out, total=len(out))
 
 @app.route("/api/admin/stats", methods=["POST"])
 def h_stats():
