@@ -73,7 +73,7 @@ def send_tg(chat_id, text):
     except: pass
 
 @app.route("/", methods=["GET"])
-def home(): return ok(name="MYTOKEN API", version="8.0 Mongo", status="online")
+def home(): return ok(name="MYTOKEN API", version="8.1 Fees", status="online")
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -139,15 +139,35 @@ def h_wd_req():
     u = get_user(uid)
     if not u: return err("User not found", 404)
     bal = n(u.get("balance")); wal = u.get("wallet", "")
+    
     if not wal: return err("اربط محفظتك أولاً", 400)
     if amt < MIN_WITHDRAW: return err("الحد الأدنى 1,000 MYT", 400)
     if amt > bal: return err("رصيد غير كافٍ", 400)
     
+    # --- FEE CALCULATION ---
+    platform_fee = round(amt * 0.02, 2)
+    network_fee = 50.0
+    net_amount = amt - platform_fee - network_fee
+    if net_amount <= 0: return err("المبلغ صغير جداً بعد خصم الرسوم", 400)
+    
     rid = "wd_" + uid + "_" + str(int(_t.time()))
-    wd_col.insert_one({"req_id": rid, "user_id": uid, "first_name": u.get("first_name"), "amount": str(round(amt, 2)), "wallet": wal, "status": "pending", "created_at": int(_t.time())})
+    wd_col.insert_one({
+        "req_id": rid, "user_id": uid, "first_name": u.get("first_name"), 
+        "requested": str(round(amt, 2)), "platform_fee": str(platform_fee), 
+        "network_fee": str(network_fee), "net_amount": str(round(net_amount, 2)), 
+        "wallet": wal, "status": "pending", "created_at": int(_t.time())
+    })
+    
     upd_user(uid, balance=bal - amt, pending=n(u.get("pending")) + amt)
-    send_tg(int(ADMIN_ID), f"طلب سحب جديد\nالاسم: {u.get('first_name')}\nID: {uid}\nالمبلغ: {amt} MYT")
-    return ok(message="Request sent", amount=amt)
+    
+    msg = (f"طلب سحب جديد\nالاسم: {u.get('first_name')}\nID: {uid}\n" +
+           f"المطلوب: {amt} MYT\n" +
+           f"عمولة المنصة (2%): {platform_fee} MYT\n" +
+           f"رسوم الشبكة: {network_fee} MYT\n" +
+           f"الصافي للمستخدم: {round(net_amount, 2)} MYT")
+           
+    send_tg(int(ADMIN_ID), msg)
+    return ok(message="Request sent", amount=amt, net_amount=round(net_amount, 2))
 
 @app.route("/api/admin/stats", methods=["POST"])
 def h_stats():
