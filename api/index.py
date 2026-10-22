@@ -1,272 +1,305 @@
-import os, json
-import time as _t
-from datetime import datetime, timezone
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from pymongo import MongoClient
+import os
+import json
+import time
+import urllib.request
+from datetime import datetime, timezone
 
 app = Flask(__name__)
+CORS(app) # للسماح للواجهة بالاتصال
 
-@app.after_request
-def cors(r):
-    r.headers["Access-Control-Allow-Origin"] = "*"
-    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    r.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    return r
+# --- الإعدادات الأساسية ---
+MONGO_URI = os.environ.get("MONGO_URI")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = "8063963886"
 
-@app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
-@app.route("/<path:path>", methods=["OPTIONS"])
-def preflight(path): return ("", 204)
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = str(os.environ.get("ADMIN_ID", "8063963886"))
-MONGO_URI = os.environ.get("MONGO_URI", "")
-
-REFERRAL_REWARD = 100
-TAP_REWARD = 0.001
-AD_REWARD = 0.10
-MIN_WITHDRAW = 1000
-
-VIP_PLANS = {
-    "bronze":  {"name": "Bronze",  "price": 0.5, "days": 7,    "mult": 2,  "icon": "B"},
-    "silver":  {"name": "Silver",  "price": 1.0, "days": 30,   "mult": 3,  "icon": "S"},
-    "gold":    {"name": "Gold",    "price": 2.0, "days": 90,   "mult": 5,  "icon": "G"},
-    "diamond": {"name": "Diamond", "price": 5.0, "days": 3650, "mult": 10, "icon": "D"},
-}
-
+# --- الاتصال بقاعدة البيانات ---
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = client['mytoken_db']
-    users_col = db['users']
-    wd_col = db['withdrawals']
-    vip_col = db['vip_requests']
+    db = client.get_database("mytoken_db")
+    users_col = db.get_collection("users")
+    wd_col = db.get_collection("withdrawals")
+    vip_col = db.get_collection("vip_requests")
 except Exception as e:
-    print("[MongoDB Error]", e)
+    print(f"DB Error: {e}")
 
-def get_user(uid):
-    u = users_col.find_one({"user_id": str(uid)})
-    if u: del u['_id']
-    return u
-
-def save_user(uid, fields):
-    fields["user_id"] = str(uid)
-    users_col.insert_one(fields)
-
-def upd_user(uid, **fields):
-    users_col.update_one({"user_id": str(uid)}, {"$set": fields})
-
-def n(v, d=0):
-    try: return float(v if v is not None else d)
-    except: return float(d)
-
-def is_admin(b): return str(b.get("admin_id", "")) == ADMIN_ID
-def ok(**kw): return jsonify({"ok": True, **kw})
-def err(m, c=400): return jsonify({"ok": False, "error": m}), c
+# --- دوال مساعدة ---
+def is_admin(body):
+    return str(body.get("admin_id", "")) == ADMIN_ID
 
 def send_tg(chat_id, text):
     if not BOT_TOKEN: return
     try:
-        import urllib.request
-        url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         p = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         req = urllib.request.Request(url, data=json.dumps(p).encode(), headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=10)
-    except: pass
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"TG Send Error: {e}")
 
-@app.route("/", methods=["GET"])
-def home(): return ok(name="MYTOKEN API", version="8.2 Full", status="online")
+def n(val, default=0.0):
+    try: return float(val if val is not None else default)
+    except: return float(default)
 
-@app.route("/health", methods=["GET"])
+# --- المسارات (Endpoints) ---
+
+@app.route('/api/health', methods=['GET'])
 def health():
+    return jsonify({"status": "success", "db": "mongodb"}), 200
+
+@app.route('/api/user/register', methods=['POST'])
+def register():
     try:
-        users_col.find_one({})
-        return ok(redis=True, db="mongodb")
-    except Exception as e: return ok(redis=False, error=str(e))
+        data = request.json
+        user_id = str(data.get("id"))
+        ref = data.get("ref")
+        first_name = data.get("first_name", "User")
 
-@app.route("/api/register", methods=["POST"])
-def h_register():
-    body = request.get_json(silent=True) or {}
-    uid = body.get("id")
-    if not uid: return err("Missing id")
-    uid = str(int(uid))
-    ref = body.get("ref")
-    fn = str(body.get("first_name", "User")).strip()[:50]
+        user = users_col.find_one({"telegram_id": user_id})
+        if user:
+            return jsonify({"exists": True, "isNew": False}), 200
+
+        # إنشاء مستخدم جديد
+        new_user = {
+            "telegram_id": user_id,
+            "first_name": first_name,
+            "balance": 0.0,
+            "refs": 0,
+            "wallet": "",
+            "is_verified": False,
+            "vip_level": 0,
+            "vip_expires": 0,
+            "ads_watched": 0,
+            "last_checkin": 0,
+            "created_at": int(time.time())
+        }
+        users_col.insert_one(new_user)
+
+        # معالجة الإحالة
+        if ref and str(ref) != user_id:
+            ref_user = users_col.find_one({"telegram_id": str(ref)})
+            if ref_user:
+                users_col.update_one(
+                    {"telegram_id": str(ref)},
+                    {"$inc": {"balance": 100, "refs": 1}} # مكافأة 100 عملة للمحيل
+                )
+                users_col.update_one({"telegram_id": user_id}, {"$set": {"referred_by": str(ref)}})
+                send_tg(ref, f"🎉 انضم صديق جديد عبر رابطك!\n+100 MYT")
+
+        return jsonify({"exists": True, "isNew": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/user', methods=['POST'])
+def get_user():
+    try:
+        data = request.json
+        user_id = str(data.get("id"))
+        user = users_col.find_one({"telegram_id": user_id})
+        if user:
+            user['_id'] = str(user['_id'])
+            return jsonify({"exists": True, "user": user}), 200
+        return jsonify({"exists": False}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/user/update', methods=['POST'])
+def update_user():
+    try:
+        data = request.json
+        user_id = str(data.get("telegram_id"))
+        if "telegram_id" in data: del data["telegram_id"]
+        users_col.update_one({"telegram_id": user_id}, {"$set": data})
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/withdraw/request', methods=['POST'])
+def withdraw_request():
+    try:
+        data = request.json
+        user_id = str(data.get("id"))
+        amount = float(data.get("amount", 0))
+
+        user = users_col.find_one({"telegram_id": user_id})
+        if not user: return jsonify({"error": "User not found"}), 404
+        
+        balance = n(user.get("balance"))
+        wallet = user.get("wallet", "")
+
+        if not wallet: return jsonify({"error": "اربط محفظتك أولاً"}), 400
+        if amount < 1000: return jsonify({"error": "الحد الأدنى 1000 MYT"}), 400
+        if amount > balance: return jsonify({"error": "رصيد غير كافٍ"}), 400
+
+        # العمولات
+        platform_fee = round(amount * 0.02, 2)
+        network_fee = 50.0
+        net_amount = amount - platform_fee - network_fee
+
+        if net_amount <= 0: return jsonify({"error": "المبلغ لا يغطي الرسوم"}), 400
+
+        req_id = f"wd_{user_id}_{int(time.time())}"
+        
+        # حفظ الطلب
+        wd_col.insert_one({
+            "req_id": req_id,
+            "user_id": user_id,
+            "first_name": user.get("first_name"),
+            "requested": amount,
+            "net_amount": net_amount,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": int(time.time())
+        })
+
+        # خصم الرصيد وتحويله للمعلق
+        users_col.update_one({"telegram_id": user_id}, {"$inc": {"balance": -amount}})
+
+        # إشعار الأدمن
+        send_tg(ADMIN_ID, f"💸 طلب سحب جديد\n👤 {user.get('first_name')}\n💰 {amount} MYT\n🪙 الصافي: {net_amount} MYT")
+        
+        return jsonify({"ok": True, "message": "Request sent", "net_amount": net_amount}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/vip/purchase', methods=['POST'])
+def vip_purchase():
+    try:
+        data = request.json
+        user_id = str(data.get("id"))
+        plan = data.get("plan") # bronze, silver, gold
+        
+        prices = {"bronze": 5000, "silver": 20000, "gold": 50000}
+        if plan not in prices: return jsonify({"error": "Invalid plan"}), 400
+
+        user = users_col.find_one({"telegram_id": user_id})
+        if n(user.get("balance")) < prices[plan]:
+            return jsonify({"error": "رصيدك غير كافٍ لشراء VIP"}), 400
+
+        # خصم الرصيد وتفعيل VIP
+        users_col.update_one({"telegram_id": user_id}, {
+            "$inc": {"balance": -prices[plan]},
+            "$set": {"vip_level": plan, "vip_expires": int(time.time()) + (30 * 86400)}
+        })
+        
+        send_tg(ADMIN_ID, f"👑 شراء VIP جديد\n👤 {user.get('first_name')}\nالمستوى: {plan}")
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/task/claim_ad', methods=['POST'])
+def claim_ad():
+    try:
+        data = request.json
+        user_id = str(data.get("id"))
+        
+        user = users_col.find_one({"telegram_id": user_id})
+        if not user: return jsonify({"error": "User not found"}), 404
+
+        # إضافة 0.10 عملة لكل إعلان
+        users_col.update_one({"telegram_id": user_id}, {
+            "$inc": {"balance": 0.10, "ads_watched": 1}
+        })
+        return jsonify({"ok": True, "reward": 0.10}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- مسارات الأدمن (Admin Endpoints) ---
+
+@app.route('/api/admin/stats', methods=['POST'])
+def stats():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
     
-    if get_user(uid): return ok(exists=True, isNew=False, referral=False)
-    
-    save_user(uid, {
-        "first_name": fn, "balance": 0.0, "pending": 0.0, "refs": 0, "ref_earned": 0.0,
-        "streak": 0, "checkin_day": 0, "wallet": "", "ads": 0, "taps": 0, "level": 1,
-        "vip_level": "", "vip_expires": 0, "created_at": int(_t.time()), "last_active": "now"
-    })
-    
-    rd = False
-    if ref:
-        try: ref = str(int(ref))
-        except: ref = None
-        if ref and ref != uid and get_user(ref):
-            upd_user(ref, refs=int(n(get_user(ref).get("refs"))) + 1, balance=n(get_user(ref).get("balance")) + REFERRAL_REWARD)
-            upd_user(uid, referred_by=ref)
-            rd = True
-            send_tg(int(ref), "🎉 <b>صديق جديد!</b>\n💰 +100 MYT\n👥 إحالاتك +1")
-            
-    return ok(exists=True, isNew=True, referral=rd)
-
-@app.route("/api/user", methods=["POST"])
-def h_user():
-    body = request.get_json(silent=True) or {}
-    uid = body.get("id")
-    if not uid: return err("Missing id")
-    uid = str(int(uid))
-    u = get_user(uid)
-    if not u: return ok(exists=False)
-    upd_user(uid, last_active="now")
-    return ok(exists=True, user_id=uid, first_name=u.get("first_name", "User"), balance=n(u.get("balance")), pending=n(u.get("pending")), refs=int(n(u.get("refs"))), checkinDay=int(n(u.get("checkin_day"))), wallet=u.get("wallet", ""), level=int(n(u.get("level"), 1)), vip_level=u.get("vip_level", ""), vip_expires=int(n(u.get("vip_expires"))))
-
-@app.route("/api/wallet", methods=["POST"])
-def h_wallet():
-    body = request.get_json(silent=True) or {}
-    uid = body.get("id"); w = str(body.get("wallet", "")).strip()
-    if not uid or not w: return err("Missing fields")
-    upd_user(str(int(uid)), wallet=w[:100])
-    return ok(wallet=w)
-
-@app.route("/api/withdraw/request", methods=["POST"])
-def h_wd_req():
-    body = request.get_json(silent=True) or {}
-    uid = body.get("id"); amt = body.get("amount")
-    if not uid or amt is None: return err("Missing fields")
-    uid = str(int(uid)); amt = float(amt)
-    u = get_user(uid)
-    if not u: return err("User not found", 404)
-    bal = n(u.get("balance")); wal = u.get("wallet", "")
-    if not wal: return err("اربط محفظتك أولاً", 400)
-    if amt < MIN_WITHDRAW: return err("الحد الأدنى 1,000 MYT", 400)
-    if amt > bal: return err("رصيد غير كافٍ", 400)
-    
-    platform_fee = round(amt * 0.02, 2)
-    network_fee = 50.0
-    net_amount = amt - platform_fee - network_fee
-    if net_amount <= 0: return err("المبلغ صغير جداً بعد خصم الرسوم", 400)
-    
-    rid = "wd_" + uid + "_" + str(int(_t.time()))
-    wd_col.insert_one({
-        "req_id": rid, "user_id": uid, "first_name": u.get("first_name"), 
-        "requested": str(round(amt, 2)), "platform_fee": str(platform_fee), 
-        "network_fee": str(network_fee), "net_amount": str(round(net_amount, 2)), 
-        "wallet": wal, "status": "pending", "created_at": int(_t.time())
-    })
-    upd_user(uid, balance=bal - amt, pending=n(u.get("pending")) + amt)
-    msg = (f"طلب سحب جديد\nالاسم: {u.get('first_name')}\nID: {uid}\n" + f"المطلوب: {amt} MYT\n" + f"عمولة المنصة: {platform_fee} MYT\n" + f"رسوم الشبكة: {network_fee} MYT\n" + f"الصافي: {round(net_amount, 2)} MYT")
-    send_tg(int(ADMIN_ID), msg)
-    return ok(message="Request sent", amount=amt, net_amount=round(net_amount, 2))
-
-@app.route("/api/admin/withdrawals", methods=["POST"])
-def h_wd_list():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
-    out = list(wd_col.find({}, {"_id": 0}).sort("created_at", -1))
-    return ok(withdrawals=out, total=len(out))
-
-@app.route("/api/vip/plans", methods=["GET"])
-def h_vip_plans(): return ok(plans=VIP_PLANS)
-
-@app.route("/api/vip/purchase", methods=["POST"])
-def h_vip_req():
-    body = request.get_json(silent=True) or {}
-    uid = body.get("id"); plan = body.get("plan")
-    if not uid or not plan: return err("Missing fields")
-    if plan not in VIP_PLANS: return err("Invalid plan")
-    uid = str(int(uid))
-    u = get_user(uid)
-    if not u: return err("User not found", 404)
-    rid = "vip_" + uid + "_" + str(int(_t.time()))
-    p = VIP_PLANS[plan]
-    vip_col.insert_one({
-        "req_id": rid, "user_id": uid, "first_name": u.get("first_name"), 
-        "plan": plan, "plan_name": p["name"], "price": str(p["price"]), 
-        "status": "pending", "created_at": int(_t.time())
-    })
-    msg = (f"طلب VIP جديد\nالاسم: {u.get('first_name')}\nID: {uid}\nالمستوى: {p['name']}\nالسعر: {p['price']} TON")
-    send_tg(int(ADMIN_ID), msg)
-    return ok(req_id=rid, message="Request sent")
-
-@app.route("/api/admin/vip/requests", methods=["POST"])
-def h_vip_list():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
-    out = list(vip_col.find({}, {"_id": 0}).sort("created_at", -1))
-    return ok(requests=out, total=len(out))
-
-@app.route("/api/admin/stats", methods=["POST"])
-def h_stats():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
     total_users = users_col.count_documents({})
-    total_bal = 0.0
+    total_bal = 0
     for u in users_col.find({}, {"balance": 1}): total_bal += n(u.get("balance"))
-    return ok(total_users=total_users, total_balance=round(total_bal, 2))
+    
+    return jsonify({
+        "ok": True, 
+        "total_users": total_users, 
+        "total_balance": total_bal, 
+        "pending_withdrawals": wd_col.count_documents({"status": "pending"}),
+        "verified_users": users_col.count_documents({"is_verified": True})
+    }), 200
 
-@app.route("/api/admin/users", methods=["POST"])
-def h_users():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
+@app.route('/api/admin/withdrawals', methods=['POST'])
+def wd_list():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
+    out = list(wd_col.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1))
+    return jsonify({"ok": True, "withdrawals": out}), 200
+
+@app.route('/api/admin/withdraw/approve', methods=['POST'])
+def wd_approve():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
+    req_id = body.get("req_id")
+    wd = wd_col.find_one({"req_id": req_id})
+    if wd:
+        wd_col.update_one({"req_id": req_id}, {"$set": {"status": "approved"}})
+        send_tg(wd["user_id"], f"✅ تمت الموافقة على طلب السحب الخاص بك!\nالصافي: {wd['net_amount']} MYT")
+    return jsonify({"ok": True}), 200
+
+@app.route('/api/admin/withdraw/reject', methods=['POST'])
+def wd_reject():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
+    req_id = body.get("req_id")
+    wd = wd_col.find_one({"req_id": req_id})
+    if wd:
+        wd_col.update_one({"req_id": req_id}, {"$set": {"status": "rejected"}})
+        # إرجاع الرصيد للمستخدم
+        users_col.update_one({"telegram_id": wd["user_id"]}, {"$inc": {"balance": n(wd["requested"])}})
+        send_tg(wd["user_id"], f"❌ تم رفض طلب السحب وإرجاع الرصيد لحسابك.")
+    return jsonify({"ok": True}), 200
+
+@app.route('/api/admin/users', methods=['POST'])
+def users_list():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
     users = []
-    for u in users_col.find({}).sort("balance", -1).limit(300):
-        users.append({"user_id": u.get("user_id", ""), "first_name": u.get("first_name", ""), "balance": round(n(u.get("balance")), 2), "refs": int(n(u.get("refs"))), "wallet": u.get("wallet", "")})
-    return ok(users=users, total=len(users))
+    for u in users_col.find({}).sort("balance", -1).limit(100):
+        users.append({
+            "user_id": u.get("telegram_id", ""),
+            "first_name": u.get("first_name", "مستخدم"),
+            "balance": n(u.get("balance")),
+            "refs": int(n(u.get("refs"))),
+            "wallet": u.get("wallet", ""),
+            "is_verified": u.get("is_verified", False),
+            "vip": u.get("vip_level", "None")
+        })
+    return jsonify({"ok": True, "users": users}), 200
 
-@app.route("/api/admin/give", methods=["POST"])
-def h_give():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
-    uid = str(int(body.get("target_id", 0)))
-    amt = float(body.get("amount", 0))
-    u = get_user(uid)
-    if not u: return err("User not found", 404)
-    cur = n(u.get("balance"))
-    if amt < 0 and abs(amt) > cur: return err("رصيد غير كافٍ", 400)
-    nb = max(0, cur + amt)
-    upd_user(uid, balance=nb)
-    return ok(new_balance=round(nb, 4))
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-@app.route("/api/admin/withdrawal/approve", methods=["POST"])
-def h_wd_approve():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
-    req_id = body.get("req_id")
-    if not req_id: return err("Missing req_id")
-    req = wd_col.find_one({"req_id": req_id})
-    if not req: return err("Request not found", 404)
-    if req["status"] != "pending": return err("Request already processed")
+@app.route('/api/admin/give_balance', methods=['POST'])
+def give_balance():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
+    user_id = str(body.get("user_id"))
+    amount = float(body.get("amount", 0))
     
-    amt = float(req["requested"])
-    uid = req["user_id"]
-    u = get_user(uid)
-    new_pending = max(0, n(u.get("pending")) - amt)
-    upd_user(uid, pending=new_pending)
-    wd_col.update_one({"req_id": req_id}, {"$set": {"status": "approved"}})
-    send_tg(int(uid), f"✅ تمت الموافقة على سحبك\n💰 {amt} MYT")
-    return ok(message="Approved")
+    users_col.update_one({"telegram_id": user_id}, {"$inc": {"balance": amount}})
+    send_tg(user_id, f"💰 <b>تم تعديل رصيدك من الإدارة!</b>\nالتعديل: {amount} MYT")
+    return jsonify({"ok": True}), 200
 
-@app.route("/api/admin/withdrawal/reject", methods=["POST"])
-def h_wd_reject():
-    body = request.get_json(silent=True) or {}
-    if not is_admin(body): return err("Unauthorized", 403)
-    req_id = body.get("req_id")
-    if not req_id: return err("Missing req_id")
-    req = wd_col.find_one({"req_id": req_id})
-    if not req: return err("Request not found", 404)
-    if req["status"] != "pending": return err("Request already processed")
+@app.route('/api/admin/broadcast', methods=['POST'])
+def broadcast():
+    body = request.json
+    if not is_admin(body): return jsonify({"error": "Unauthorized"}), 403
+    message = body.get("message")
+    if not message: return jsonify({"error": "Message is empty"}), 400
     
-    amt = float(req["requested"])
-    uid = req["user_id"]
-    u = get_user(uid)
-    new_pending = max(0, n(u.get("pending")) - amt)
-    new_bal = n(u.get("balance")) + amt
-    upd_user(uid, pending=new_pending, balance=new_bal)
-    wd_col.update_one({"req_id": req_id}, {"$set": {"status": "rejected"}})
-    send_tg(int(uid), f"❌ تم رفض طلب السحب\nتم إرجاع {amt} MYT لرصيدك.")
-    return ok(message="Rejected")
+    all_users = users_col.find({}, {"telegram_id": 1})
+    count = 0
+    for u in all_users:
+        send_tg(u["telegram_id"], message)
+        count += 1
+        time.sleep(0.05) # لتجنب حظر البوت من تيليجرام
+        
+    return jsonify({"ok": True, "sent_to": count}), 200
+
+# --- معالج Vercel ---
+def handler(event, context):
+    return app(event, context)
